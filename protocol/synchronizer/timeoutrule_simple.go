@@ -14,8 +14,8 @@ type Simple struct {
 	auth   *cert.Authority
 }
 
-// newSimple returns a simple timeout rule instance.
-func newSimple(
+// NewSimple returns a simple timeout rule instance.
+func NewSimple(
 	config *core.RuntimeConfig,
 	auth *cert.Authority,
 ) *Simple {
@@ -43,10 +43,10 @@ func (s *Simple) RemoteTimeoutRule(_, timeoutView hotstuff.View, timeouts []hots
 	if err != nil {
 		return hotstuff.SyncInfo{}, fmt.Errorf("failed to create timeout certificate: %w", err)
 	}
-	return hotstuff.NewSyncInfoWith(tc), nil
+	return hotstuff.NewSyncInfo().WithTC(tc), nil
 }
 
-func (s *Simple) VerifySyncInfo(syncInfo hotstuff.SyncInfo) (qc *hotstuff.QuorumCert, view hotstuff.View, timeout bool, err error) {
+func (s *Simple) VerifySyncInfo(syncInfo hotstuff.SyncInfo) (qc hotstuff.Cert, view hotstuff.View, timeout bool, err error) {
 	if timeoutCert, haveTC := syncInfo.TC(); haveTC {
 		if err := s.auth.VerifyTimeoutCert(timeoutCert); err != nil {
 			return nil, 0, timeout, fmt.Errorf("failed to verify timeout certificate: %w", err)
@@ -64,7 +64,8 @@ func (s *Simple) VerifySyncInfo(syncInfo hotstuff.SyncInfo) (qc *hotstuff.Quorum
 			view = quorumCert.View()
 			timeout = false
 		}
-		return &quorumCert, view, timeout, nil
+		var cert hotstuff.Cert = quorumCert
+		return cert, view, timeout, nil
 	}
 	return nil, view, timeout, nil // quorum certificate not present, so no high QC available
 }

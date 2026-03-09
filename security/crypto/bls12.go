@@ -179,7 +179,10 @@ func (bls *bls12Base) publicKey(id hotstuff.ID) (pubKey *BLS12PublicKey, err err
 	if id == bls.config.ID() {
 		return pubKey, nil
 	}
-	return pubKey, bls.checkPop(replica)
+	if err := bls.checkPop(replica); err != nil {
+		return nil, err
+	}
+	return pubKey, nil
 }
 
 func (bls *bls12Base) subgroupCheck(point *bls12.PointG2) error {
@@ -285,7 +288,7 @@ func (bls *bls12Base) coreAggregateVerify(publicKeys []*BLS12PublicKey, messages
 
 	engine := bls12.NewEngine()
 
-	for i := range n {
+	for i := 0; i < n; i++ {
 		q, err := engine.G2.HashToCurve(messages[i], domain)
 		if err != nil {
 			return err
@@ -376,7 +379,9 @@ func (bls *bls12Base) Verify(signature hotstuff.QuorumSignature, message []byte)
 		if err != nil {
 			return err
 		}
-		return bls.coreVerify(pk, message, &s.sig, domain)
+		if err := bls.coreVerify(pk, message, &s.sig, domain); err != nil {
+			return err
+		}
 	}
 
 	// else if l > 1:
@@ -385,7 +390,7 @@ func (bls *bls12Base) Verify(signature hotstuff.QuorumSignature, message []byte)
 	s.Participants().RangeWhile(func(id hotstuff.ID) bool {
 		pk, err := bls.publicKey(id)
 		if err != nil {
-			errs = errors.Join(errs, err)
+			errs = errors.Join(err)
 			return false
 		}
 		pks = append(pks, pk)
@@ -421,9 +426,95 @@ func (bls *bls12Base) BatchVerify(signature hotstuff.QuorumSignature, batch map[
 	}
 
 	if len(batch) == 1 {
-		return bls.coreVerify(pks[0], msgs[0], &s.sig, domain)
+		if err := bls.coreVerify(pks[0], msgs[0], &s.sig, domain); err != nil {
+			return err
+		}
+		return nil
 	}
 	return bls.aggregateVerify(pks, msgs, &s.sig)
+}
+
+func (bls *bls12Base) VerifyQuorumSeenCert(qsc *hotstuff.QuorumSeenCert) error {
+	if qsc.Signature() == nil || len(qsc.Metadata()) < bls.config.QuorumSize() {
+		return fmt.Errorf("쿼럼 안맞음")
+	}
+	s, ok := qsc.Signature().(*BLS12AggregateSignature)
+	if !ok {
+		return fmt.Errorf("bls12가 아니여서 집계못함")
+	}
+
+	if bls.subgroupCheck(&s.sig) != nil {
+		return fmt.Errorf("서브그룹 체크불가")
+	}
+
+	engine := bls12.NewEngine()
+	g1 := engine.G1
+	g2 := engine.G2
+
+	engine.AddPairInv(&bls12.G1One, &s.sig)
+
+	for voter, echoSet := range qsc.Metadata() {
+		if echoSet == nil || echoSet.Len() < bls.config.QuorumSize() {
+			return fmt.Errorf("echoset의 쿼럼사이즈 안맞음")
+		}
+
+		hash := qsc.BlockHash()
+		bytes := append(hash[:], voter.ToBytes()...)
+		Q, err := g2.HashToCurve(bytes, domain)
+		if err != nil {
+			return err
+		}
+
+		var APK bls12.PointG1
+		okAcc := true
+		echoSet.RangeWhile(func(e hotstuff.ID) bool {
+			pk, err := bls.publicKey(e)
+			if err != nil || pk == nil || pk.p == nil {
+				okAcc = false
+				return false
+			}
+			g1.Add(&APK, &APK, pk.p)
+			return true
+		})
+		if !okAcc {
+			return fmt.Errorf("검증실패")
+		}
+
+		engine.AddPair(&APK, Q)
+	}
+
+	if engine.Result().IsOne() {
+		return nil
+	} else {
+		return fmt.Errorf("검증실패")
+	}
+}
+
+// Combine combines multiple signatures into a single signature.
+func (bls *bls12Base) SeenCertCombine(signatures ...hotstuff.QuorumSignature) (combined hotstuff.QuorumSignature, err error) {
+	if len(signatures) < 2 {
+		return nil, ErrCombineMultiple
+	}
+
+	g2 := bls12.NewG2()
+	agg := bls12.PointG2{}
+	var participants Bitfield
+	for _, sig1 := range signatures {
+		sig2, ok := sig1.(*BLS12AggregateSignature)
+		if !ok {
+			return nil, fmt.Errorf("bls12: cannot combine incompatible signature type %T (expected %T)", sig1, sig2)
+		}
+		sig2.participants.ForEach(func(id hotstuff.ID) {
+			participants.Add(id)
+		})
+		g2.Add(&agg, &agg, &sig2.sig)
+	}
+	return &BLS12AggregateSignature{sig: agg, participants: participants}, nil
+}
+
+type NVCVerifier interface {
+	VerifyQuorumSeenCert(qsc *hotstuff.QuorumSeenCert) error
+	SeenCertCombine(signatures ...hotstuff.QuorumSignature) (combined hotstuff.QuorumSignature, err error)
 }
 
 var _ Base = (*bls12Base)(nil)

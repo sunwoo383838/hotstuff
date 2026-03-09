@@ -30,6 +30,7 @@ func NewConsensus(
 	leaderRotation leaderrotation.LeaderRotation,
 	viewStates *protocol.ViewStates,
 	comm comm.Communication,
+	sender core.Sender,
 ) *Consensus {
 	committer := consensus.NewCommitter(
 		eventLoop,
@@ -45,6 +46,7 @@ func NewConsensus(
 		comm,
 		auth,
 		committer,
+		blockchain,
 	)
 	return &Consensus{
 		committer: committer,

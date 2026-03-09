@@ -9,7 +9,6 @@ package eventloop
 import (
 	"context"
 	"reflect"
-	"slices"
 	"sync"
 	"time"
 
@@ -42,11 +41,11 @@ func Prioritize() HandlerOption {
 	}
 }
 
-// EventHandler processes an event of type T.
-type EventHandler[T any] func(event T)
+// EventHandler processes an event.
+type EventHandler func(event any)
 
 type handler struct {
-	callback EventHandler[any]
+	callback EventHandler
 	opts     handlerOpts
 }
 
@@ -85,47 +84,51 @@ func New(
 	return el
 }
 
-// Register registers the given event handler for the event type T with the given handler options, if any.
+// RegisterHandler registers the given event handler for the given event type with the given handler options, if any.
 // If no handler options are provided, the default handler options will be used.
-// The returned function can be used to unregister the handler.
-func Register[T any](el *EventLoop, callback EventHandler[T], opts ...HandlerOption) func() {
-	// wrap the typed callback so we can store it as EventHandler[any]
-	wrapped := func(e any) { callback(e.(T)) }
-	h := handler{callback: wrapped}
+func (el *EventLoop) RegisterHandler(eventType any, handler EventHandler, opts ...HandlerOption) int {
+	return el.registerHandler(eventType, opts, handler)
+}
+
+func (el *EventLoop) registerHandler(eventType any, opts []HandlerOption, callback EventHandler) int {
+	h := handler{callback: callback}
+
 	for _, opt := range opts {
 		opt(&h.opts)
 	}
-	t := reflect.TypeFor[T]()
 
 	el.mut.Lock()
 	defer el.mut.Unlock()
+	t := reflect.TypeOf(eventType)
+
+	handlers := el.handlers[t]
 
 	// search for a free slot for the handler
-	i := slices.IndexFunc(el.handlers[t], func(h handler) bool { return h.callback == nil })
-	if i == -1 {
-		// no free slots; have to grow the list
-		i = len(el.handlers[t])
-		el.handlers[t] = append(el.handlers[t], h)
-	} else {
-		el.handlers[t][i] = h
+	i := 0
+	for ; i < len(handlers); i++ {
+		if handlers[i].callback == nil {
+			break
+		}
 	}
 
-	return func() {
-		el.mut.Lock()
-		defer el.mut.Unlock()
-		el.handlers[t][i].callback = nil
+	// no free slots; have to grow the list
+	if i == len(handlers) {
+		handlers = append(handlers, h)
+	} else {
+		handlers[i] = h
 	}
+
+	el.handlers[t] = handlers
+
+	return i
 }
 
-// DelayUntil postpones handling the provided event until after another event of type T has occurred.
-func DelayUntil[T any](el *EventLoop, event any) {
-	if event == nil {
-		return
-	}
-	t := reflect.TypeFor[T]()
+// UnregisterHandler unregisters the handler for the given event type with the given id.
+func (el *EventLoop) UnregisterHandler(eventType any, id int) {
 	el.mut.Lock()
-	el.waitingEvents[t] = append(el.waitingEvents[t], event)
-	el.mut.Unlock()
+	defer el.mut.Unlock()
+	t := reflect.TypeOf(eventType)
+	el.handlers[t][id].callback = nil
 }
 
 // AddEvent adds an event to the event queue.
@@ -183,7 +186,8 @@ loop:
 	}
 
 	// HACK: when we get canceled, we will handle the events that were in the queue at that time before quitting.
-	for range el.eventQ.len() {
+	l := el.eventQ.len()
+	for i := 0; i < l; i++ {
 		event, _ := el.eventQ.pop()
 		el.processEvent(event, false)
 	}
@@ -207,7 +211,7 @@ func (el *EventLoop) Tick(ctx context.Context) bool {
 	return true
 }
 
-var handlerListPool = newPool(func() []EventHandler[any] { return make([]EventHandler[any], 0, 10) })
+var handlerListPool = newPool(func() []EventHandler { return make([]EventHandler, 0, 10) })
 
 // processEvent dispatches the event to the correct handler.
 func (el *EventLoop) processEvent(event any, runningInAddEvent bool) {
@@ -266,6 +270,21 @@ func (el *EventLoop) dispatchDelayedEvents(t reflect.Type) {
 	for _, event := range events {
 		el.AddEvent(event)
 	}
+}
+
+// DelayUntil allows us to delay handling of an event until after another event has happened.
+// The eventType parameter decides the type of event to wait for, and it should be the zero value
+// of that event type. The event parameter is the event that will be delayed.
+func (el *EventLoop) DelayUntil(eventType, event any) {
+	if eventType == nil || event == nil {
+		return
+	}
+	el.mut.Lock()
+	t := reflect.TypeOf(eventType)
+	v := el.waitingEvents[t]
+	v = append(v, event)
+	el.waitingEvents[t] = v
+	el.mut.Unlock()
 }
 
 type ticker struct {

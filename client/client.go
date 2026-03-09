@@ -14,6 +14,7 @@ import (
 
 	"github.com/relab/gorums"
 	"github.com/relab/hotstuff"
+	"github.com/relab/hotstuff/core"
 	"github.com/relab/hotstuff/core/eventloop"
 	"github.com/relab/hotstuff/core/logging"
 	"github.com/relab/hotstuff/internal/proto/clientpb"
@@ -23,9 +24,6 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
-
-// ID is the identifier for a client.
-type ID uint32
 
 type qspec struct {
 	faulty int
@@ -63,7 +61,7 @@ type Config struct {
 type Client struct {
 	eventLoop *eventloop.EventLoop
 	logger    logging.Logger
-	id        ID
+	config    *core.RuntimeConfig
 
 	mut              sync.Mutex
 	mgr              *clientpb.Manager
@@ -84,13 +82,13 @@ type Client struct {
 func New(
 	eventLoop *eventloop.EventLoop,
 	logger logging.Logger,
-	id ID,
+	config *core.RuntimeConfig,
 	conf Config,
 ) (client *Client) {
 	client = &Client{
 		eventLoop: eventLoop,
 		logger:    logger,
-		id:        id,
+		config:    config,
 
 		pendingCmds:      make(chan pendingCmd, conf.MaxConcurrent),
 		highestCommitted: 1,
@@ -232,7 +230,7 @@ loop:
 		}
 
 		cmd := &clientpb.Command{
-			ClientID:       uint32(c.id),
+			ClientID:       uint32(c.config.ID()),
 			SequenceNumber: num,
 			Data:           data[:n],
 		}
@@ -276,10 +274,11 @@ func (c *Client) handleCommands(ctx context.Context) (executed, failed, timeout 
 		}
 		_, err := cmd.promise.Get()
 		if err != nil {
-			if errors.Is(err, context.DeadlineExceeded) {
+			qcError, ok := err.(gorums.QuorumCallError)
+			if ok && qcError.Reason == context.DeadlineExceeded.Error() {
 				c.logger.Debug("Command timed out.")
 				timeout++
-			} else if !errors.Is(err, context.Canceled) {
+			} else if !ok || qcError.Reason != context.Canceled.Error() {
 				c.logger.Debugf("Did not get enough replies for command: %v\n", err)
 				failed++
 			}

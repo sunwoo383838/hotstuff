@@ -13,26 +13,28 @@ type Signature interface {
 }
 
 // Multi is a set of (partial) signatures.
-type Multi[T Signature] []T
+type Multi[T Signature] map[hotstuff.ID]T
 
-// NewMulti creates a new Multi from the given signatures.
-// The provided signatures are assumed to be sorted by signer ID.
-func NewMulti[T Signature](sigs ...T) Multi[T] {
-	return Multi[T](sigs)
-}
-
-// NewMultiSorted creates a new Multi from the given signatures
-// ensuring they are sorted by signer ID.
-func NewMultiSorted[T Signature](sigs ...T) Multi[T] {
-	slices.SortFunc(sigs, func(a, b T) int { return int(a.Signer()) - int(b.Signer()) })
-	return Multi[T](sigs)
+// Restore should only be used to restore an existing threshold signature from a set of signatures.
+func Restore[T Signature](signatures []T) Multi[T] {
+	sig := make(Multi[T], len(signatures))
+	for _, s := range signatures {
+		sig[s.Signer()] = s
+	}
+	return sig
 }
 
 // ToBytes returns the object as bytes.
 func (sig Multi[T]) ToBytes() []byte {
 	var b []byte
+	// sort by ID to make it deterministic
+	order := make([]hotstuff.ID, 0, len(sig))
 	for _, signature := range sig {
-		b = append(b, signature.ToBytes()...)
+		order = append(order, signature.Signer())
+	}
+	slices.Sort(order)
+	for _, id := range order {
+		b = append(b, sig[id].ToBytes()...)
 	}
 	return b
 }
@@ -42,29 +44,28 @@ func (sig Multi[T]) Participants() hotstuff.IDSet {
 	return sig
 }
 
-// Add is not supported for Multi.
+// Add adds an ID to the set.
 func (sig Multi[T]) Add(_ hotstuff.ID) {
 	panic("not implemented")
 }
 
 // Contains returns true if the set contains the ID.
 func (sig Multi[T]) Contains(id hotstuff.ID) bool {
-	return slices.ContainsFunc(sig, func(s T) bool {
-		return s.Signer() == id
-	})
+	_, ok := sig[id]
+	return ok
 }
 
 // ForEach calls f for each ID in the set.
 func (sig Multi[T]) ForEach(f func(hotstuff.ID)) {
-	for _, s := range sig {
-		f(s.Signer())
+	for id := range sig {
+		f(id)
 	}
 }
 
 // RangeWhile calls f for each ID in the set until f returns false.
 func (sig Multi[T]) RangeWhile(f func(hotstuff.ID) bool) {
-	for _, s := range sig {
-		if !f(s.Signer()) {
+	for id := range sig {
+		if !f(id) {
 			break
 		}
 	}

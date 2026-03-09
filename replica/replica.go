@@ -3,6 +3,7 @@ package replica
 
 import (
 	"context"
+	"github.com/relab/hotstuff/protocol/propagator"
 	"net"
 
 	"github.com/relab/hotstuff/core/eventloop"
@@ -45,6 +46,8 @@ func New(
 	viewDuration synchronizer.ViewDuration,
 	timeoutRules synchronizer.TimeoutRuler,
 	commandBatchSize uint32,
+	propagator *propagator.Propagator,
+	voteCollector *propagator.VoteCollector,
 	opts ...Option,
 ) (replica *Replica, err error) {
 	rOpt := newDefaultOpts()
@@ -68,6 +71,7 @@ func New(
 		leaderRotation,
 		viewStates,
 		comm,
+		sender,
 	)
 	synchronizer := synchronizer.New(
 		depsCore.EventLoop(),
@@ -80,6 +84,7 @@ func New(
 		depsConsensus.Proposer(),
 		depsConsensus.Voter(),
 		viewStates,
+		voteCollector,
 		sender,
 	)
 	rOpt.serverOpts = append(rOpt.serverOpts, server.WithGorumsServerOptions(rOpt.replicaGorumsSrvOpts...))

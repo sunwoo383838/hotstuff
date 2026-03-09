@@ -3,11 +3,13 @@ package cli
 import (
 	"bufio"
 	"fmt"
+	"github.com/relab/hotstuff/internal/infra"
 	"io"
 	"log"
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/relab/hotstuff/core/logging"
@@ -58,12 +60,52 @@ func runSingleExperiment(cfg *config.ExperimentConfig) {
 	// and when passed to iago.NewSSHGroup, thus iago will not generate
 	// an SSH group.
 	var hosts []string
+
+	if cfg.UseTerraform() {
+
+		tfManager, err := infra.NewTerraformManager(&cfg.Terraform)
+		checkf("failed to create terraform manager: %v", err)
+
+		defer func() {
+			err := tfManager.Teardown()
+			checkf("failed to teardown infrastructure: %v", err)
+		}()
+
+		err = tfManager.ValidateConfiguration()
+		if err != nil {
+			log.Printf("Terraform configuration is invalid: %v", err)
+			return
+		}
+
+		tfOutput, err := tfManager.Provision(cfg.Replicas + cfg.Clients)
+		if err != nil {
+			log.Printf("failed to provision infrastructure: %v", err)
+			return
+		}
+
+		ips := tfOutput.InstancePublicIPs
+		cfg.ReplicaHosts = ips[:cfg.Replicas]
+		cfg.ClientHosts = ips[cfg.Replicas:]
+		// 동적으로 ssh_config 파일 생성
+		sshConfigFile, err := createTempSSHConfig(tfOutput.InstancePublicIPs, tfManager.GetSSHKeyPath())
+		if err != nil {
+			log.Printf("failed to create temporary ssh config: %v", err)
+			return
+		}
+		cfg.SSHConfig = sshConfigFile
+		defer os.Remove(sshConfigFile)
+	}
+	log.Printf("is local 시작")
+
 	if !cfg.IsLocal() {
 		hosts = cfg.AllHosts()
+		log.Printf("hosts")
 	}
-
+	log.Printf("replica: %s, client: %s", cfg.ReplicaHosts, cfg.ClientHosts)
 	g, err := iago.NewSSHGroup(hosts, cfg.SSHConfig)
+
 	checkf("failed to connect to remote hosts: %v", err)
+	log.Printf("ssh설정 성공")
 
 	if cfg.Exe == "" {
 		cfg.Exe, err = os.Executable()
@@ -122,6 +164,29 @@ func runSingleExperiment(cfg *config.ExperimentConfig) {
 
 	err = g.Close()
 	checkf("failed to close ssh connections: %v", err)
+}
+
+func createTempSSHConfig(ips []string, keyPath string) (string, error) {
+	var sb strings.Builder
+	for _, ip := range ips {
+		sb.WriteString(fmt.Sprintf("Host %s\n", ip))
+		sb.WriteString("    User ubuntu\n")
+		sb.WriteString(fmt.Sprintf("    IdentityFile %s\n", keyPath))
+		sb.WriteString("    StrictHostKeyChecking no\n")
+		sb.WriteString("    UserKnownHostsFile /dev/null\n\n")
+	}
+
+	tmpFile, err := os.CreateTemp("", "ssh-config-*.tmp")
+	if err != nil {
+		return "", fmt.Errorf("failed to create temp file: %w", err)
+	}
+	defer tmpFile.Close()
+
+	if _, err := tmpFile.WriteString(sb.String()); err != nil {
+		return "", fmt.Errorf("failed to write to temp file: %w", err)
+	}
+
+	return tmpFile.Name(), nil
 }
 
 func checkf(format string, args ...any) {

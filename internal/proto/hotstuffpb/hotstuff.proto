@@ -26,19 +26,31 @@ service Consensus {
     option (gorums.unicast) = true;
   }
 
+  rpc GossipVote(PartialCert) returns (google.protobuf.Empty) {
+    option (gorums.multicast) = true;
+  }
+
+  rpc SendSeen(SeenPartialCert) returns (google.protobuf.Empty) {
+    option (gorums.unicast) = true;
+  }
+
   rpc RequestBlock(BlockHash) returns (Block) { option (gorums.quorumcall) = true; }
 }
 
 message Proposal {
   Block Block = 1;
   AggQC AggQC = 2;
+  NewViewCert NVC = 3;
 }
 
 message BlockHash { bytes Hash = 1; }
 
 message Block {
   bytes Parent = 1;
-  QuorumCert QC = 2;
+  oneof Cert {
+    QuorumCert QC = 2;
+    QuorumSeenCert QSC = 7;
+  }
   uint64 View = 3;
   clientpb.Batch Commands = 4;
   uint32 Proposer = 5;
@@ -47,7 +59,8 @@ message Block {
 
 message ECDSASignature {
   uint32 Signer = 1;
-  bytes Sig = 2;
+  bytes R = 2;
+  bytes S = 3;
 }
 
 message BLS12Signature { bytes Sig = 1; }
@@ -55,7 +68,7 @@ message BLS12Signature { bytes Sig = 1; }
 message EDDSASignature {
   uint32 Signer = 1;
   bytes Sig = 2;
- }
+}
 
 message Signature {
   oneof Sig {
@@ -63,6 +76,18 @@ message Signature {
     BLS12Signature BLS12Sig = 2;
     EDDSASignature EDDSASig = 3;
   }
+}
+
+message SeenPartialCert {
+  QuorumSignature Sig = 1;
+  uint32 Voter = 2;
+  bytes Hash = 3;
+}
+
+message SeenCert {
+  QuorumSignature Sig = 1;
+  uint32 Voter = 2;
+  bytes Hash = 3;
 }
 
 message PartialCert {
@@ -103,16 +128,40 @@ message TimeoutMsg {
   SyncInfo SyncInfo = 2;
   QuorumSignature ViewSig = 3;
   QuorumSignature MsgSig = 4;
+  bytes VoteSignatureSet = 5;
 }
 
 message SyncInfo {
   QuorumCert QC = 1;
   TimeoutCert TC = 2;
   AggQC AggQC = 3;
+  QuorumSeenCert QSC = 4;
+  NewViewCert NVC = 5;
+}
+
+message NewViewCert {
+  map<uint32, QuorumSeenCert> QSCs = 1;
+  QuorumSignature Sig = 2;
+  QuorumSignature VoteSig = 3;
+  bytes Anchor = 4;
+  uint64 View = 5;
+  repeated VoteSigEntry VoteSigs = 6;
+}
+
+message VoteSigEntry {
+  PartialCert VoteSig = 1;
+  bytes IDSet = 2;
 }
 
 message AggQC {
   map<uint32, QuorumCert> QCs = 1;
   QuorumSignature Sig = 2;
   uint64 View = 3;
+}
+
+message QuorumSeenCert {
+  QuorumSignature Sig = 1;
+  map<uint32, bytes> metadata = 2;
+  uint64 View = 3;
+  bytes Hash = 4;
 }

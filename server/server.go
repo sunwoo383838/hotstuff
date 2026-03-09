@@ -143,6 +143,32 @@ func (impl *serviceImpl) Vote(ctx gorums.ServerCtx, cert *hotstuffpb.PartialCert
 	})
 }
 
+func (impl *serviceImpl) GossipVote(ctx gorums.ServerCtx, cert *hotstuffpb.PartialCert) {
+	id, err := impl.srv.config.PeerIDFromContext(ctx)
+	if err != nil {
+		impl.srv.logger.Warnf("Could not get replica ID: %v", err)
+		return
+	}
+	impl.srv.addNetworkDelay(id)
+	impl.srv.eventLoop.AddEvent(hotstuff.VoteMsg{
+		ID:          id,
+		PartialCert: hotstuffpb.PartialCertFromProto(cert),
+	})
+}
+
+func (impl *serviceImpl) SendSeen(ctx gorums.ServerCtx, cert *hotstuffpb.SeenPartialCert) {
+	id, err := impl.srv.config.PeerIDFromContext(ctx)
+	if err != nil {
+		impl.srv.logger.Warnf("Could not get replica ID: %v", err)
+		return
+	}
+	impl.srv.addNetworkDelay(id)
+	impl.srv.eventLoop.AddEvent(hotstuff.SeenMsg{
+		ID:              id,
+		SeenPartialCert: hotstuffpb.SeenPartialCertFromProto(cert),
+	})
+}
+
 // NewView handles the leader's response to receiving a NewView rpc from a replica.
 func (impl *serviceImpl) NewView(ctx gorums.ServerCtx, msg *hotstuffpb.SyncInfo) {
 	id, err := impl.srv.config.PeerIDFromContext(ctx)
@@ -184,4 +210,4 @@ func (impl *serviceImpl) Timeout(ctx gorums.ServerCtx, msg *hotstuffpb.TimeoutMs
 	impl.srv.eventLoop.AddEvent(timeoutMsg)
 }
 
-var _ hotstuffpb.ConsensusServer = (*serviceImpl)(nil)
+var _ hotstuffpb.Consensus = (*serviceImpl)(nil)

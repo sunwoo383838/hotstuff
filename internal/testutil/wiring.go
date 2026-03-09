@@ -19,15 +19,14 @@ type Essentials struct {
 }
 
 func WireUpEssentials(
-	t testing.TB,
+	t *testing.T,
 	id hotstuff.ID,
 	cryptoName string,
-	opts ...core.RuntimeOption,
+	opts ...cert.Option,
 ) *Essentials {
 	t.Helper()
 	// NOTE: using synchronous vote verification to keep tests simple.
-	allOpts := append([]core.RuntimeOption{core.WithSyncVerification()}, opts...)
-	depsCore := wiring.NewCore(id, "test", GenerateKey(t, cryptoName), allOpts...)
+	depsCore := wiring.NewCore(id, "test", GenerateKey(t, cryptoName), core.WithSyncVerification())
 	sender := NewMockSender(id)
 	base, err := crypto.New(
 		depsCore.RuntimeCfg(),
@@ -42,6 +41,7 @@ func WireUpEssentials(
 		depsCore.RuntimeCfg(),
 		sender,
 		base,
+		opts...,
 	)
 	return &Essentials{
 		Core:     *depsCore, // no problem dereferencing, since the deps just hold pointers
@@ -59,10 +59,10 @@ type EssentialsSet []*Essentials
 // NewEssentialsSet wires up multiple essential component bundles and adds each replica configuration
 // to each other.
 func NewEssentialsSet(
-	t testing.TB,
+	t *testing.T,
 	count uint,
 	cryptoName string,
-	opts ...core.RuntimeOption,
+	opts ...cert.Option,
 ) EssentialsSet {
 	t.Helper()
 	if count == 0 {

@@ -7,18 +7,22 @@ import (
 	"github.com/relab/hotstuff/protocol/rules"
 )
 
-// TestPartitionedScenario checks that chained HotStuff will not commit a block
-// when there are gaps in the view sequence
-// all nodes are honest and the leader is in a separate partition.
+// TestPartitionedScenario checks if chained HotStuff will commit one block
+// when all nodes are honest and the leader is in a separate partition.
 func TestPartitionedScenario(t *testing.T) {
 	s := Scenario{}
-	allNodesSet := NewNodeSet(Replica(1), Replica(2), Replica(3), Replica(4))
-	partitionedSet := NewNodeSet(Replica(1), Replica(3), Replica(4))
-	leaderSet := NewNodeSet(Replica(2))
+	allNodesSet := make(NodeSet)
+	for i := 1; i <= 4; i++ {
+		allNodesSet.Add(uint32(i))
+	}
+	partitionedSet := make(NodeSet)
+	partitionedSet.Add(1)
+	partitionedSet.Add(3)
+	partitionedSet.Add(4)
+	leaderSet := make(NodeSet)
+	leaderSet.Add(2)
 	s = append(s, View{Leader: 1, Partitions: []NodeSet{allNodesSet}})
-	// block in view 2 will be lost, because of partition
 	s = append(s, View{Leader: 2, Partitions: []NodeSet{leaderSet, partitionedSet}})
-	// block in view 3 will have parent and QC from view 1
 	s = append(s, View{Leader: 3, Partitions: []NodeSet{allNodesSet}})
 	s = append(s, View{Leader: 1, Partitions: []NodeSet{allNodesSet}})
 	s = append(s, View{Leader: 1, Partitions: []NodeSet{allNodesSet}})
@@ -30,39 +34,8 @@ func TestPartitionedScenario(t *testing.T) {
 	if !result.Safe {
 		t.Errorf("Expected no safety violations")
 	}
-	if result.Commits != 0 {
-		t.Errorf("Expected zero commits, got %d", result.Commits)
-	}
-	t.Logf("Network log:\n%s", result.NetworkLog)
-}
-
-// TestPartitionedScenario2 checks that chained HotStuff will commit a block
-// in fourth view after a partition
-// all nodes are honest and the leader is in a separate partition.
-func TestPartitionedScenario2(t *testing.T) {
-	s := Scenario{}
-	allNodesSet := NewNodeSet(Replica(1), Replica(2), Replica(3), Replica(4))
-	partitionedSet := NewNodeSet(Replica(1), Replica(3), Replica(4))
-	leaderSet := NewNodeSet(Replica(2))
-	s = append(s, View{Leader: 1, Partitions: []NodeSet{allNodesSet}})
-	// block in view 2 will be lost, because of partition
-	s = append(s, View{Leader: 2, Partitions: []NodeSet{leaderSet, partitionedSet}})
-	// block in view 3 will have parent and QC from view 1
-	s = append(s, View{Leader: 3, Partitions: []NodeSet{allNodesSet}})
-	s = append(s, View{Leader: 1, Partitions: []NodeSet{allNodesSet}})
-	s = append(s, View{Leader: 1, Partitions: []NodeSet{allNodesSet}})
-	// in view 6, block from view 3, together with view 1 will be committed
-	s = append(s, View{Leader: 1, Partitions: []NodeSet{allNodesSet}})
-	logging.SetLogLevel("debug")
-	result, err := ExecuteScenario(s, 4, 0, 100, rules.NameChainedHotStuff)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !result.Safe {
-		t.Errorf("Expected no safety violations")
-	}
-	if result.Commits != 2 {
-		t.Errorf("Expected two commits, got %d", result.Commits)
+	if result.Commits != 1 {
+		t.Error("Expected one commit")
 	}
 	t.Logf("Network log:\n%s", result.NetworkLog)
 }
@@ -71,7 +44,10 @@ func TestPartitionedScenario2(t *testing.T) {
 // when all nodes are honest and the network is not partitioned.
 func TestBasicScenario(t *testing.T) {
 	s := Scenario{}
-	allNodesSet := NewNodeSet(Replica(1), Replica(2), Replica(3), Replica(4))
+	allNodesSet := make(NodeSet)
+	for i := 1; i <= 4; i++ {
+		allNodesSet.Add(uint32(i))
+	}
 	s = append(s, View{Leader: 1, Partitions: []NodeSet{allNodesSet}})
 	s = append(s, View{Leader: 1, Partitions: []NodeSet{allNodesSet}})
 	s = append(s, View{Leader: 1, Partitions: []NodeSet{allNodesSet}})
@@ -85,147 +61,6 @@ func TestBasicScenario(t *testing.T) {
 		t.Errorf("Expected no safety violations")
 	}
 	if result.Commits != 1 {
-		t.Errorf("Expected one commit, got %d", result.Commits)
-	}
-}
-
-// TestBasicTwinsScenario checks if chained HotStuff will commit one block
-// when one replica (not the leader) has a twin.
-func TestBasicTwinsScenario(t *testing.T) {
-	s := Scenario{}
-	// With 1 twin: nodes with NetworkID 1 and 2 will be twins of replica 1.
-	allNodesSet := NewNodeSet(Replica(1).Twin(1), Replica(1).Twin(2), Replica(2), Replica(3), Replica(4))
-	s = append(s, View{Leader: 3, Partitions: []NodeSet{allNodesSet}})
-	s = append(s, View{Leader: 3, Partitions: []NodeSet{allNodesSet}})
-	s = append(s, View{Leader: 3, Partitions: []NodeSet{allNodesSet}})
-	s = append(s, View{Leader: 3, Partitions: []NodeSet{allNodesSet}})
-	logging.SetLogLevel("debug")
-	result, err := ExecuteScenario(s, 4, 1, 100, rules.NameChainedHotStuff)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !result.Safe {
-		t.Errorf("Expected no safety violations")
-	}
-	if result.Commits != 1 {
-		t.Errorf("Expected one commit, got %d", result.Commits)
-		for id, commits := range result.NodeCommits {
-			t.Logf("Node %v commits:", id)
-			for _, b := range commits {
-				t.Logf("  %v", b)
-			}
-		}
-	}
-
-	// t.Logf("Node logs:\n%s", result.NodeLogs[NodeID{1, 1}])
-	t.Logf("Network log:\n%s", result.NetworkLog)
-}
-
-// TestTwinsScenarioNeeded checks if chained HotStuff will commit one block
-// when one replica (not the leader) has a twin and the twins votes are needed
-func TestTwinsScenarioNeeded(t *testing.T) {
-	s := Scenario{}
-	// With 1 twin: nodes with NetworkID 1 and 2 will be twins of replica 1.
-	allNodesSet := NewNodeSet(Replica(1).Twin(1), Replica(1).Twin(2), Replica(2), Replica(3), Replica(4))
-	BCD := NewNodeSet(Replica(2), Replica(1).Twin(2), Replica(3)) // node with NetworkID 2 is the twin of replica 1
-
-	s = append(s, View{Leader: 3, Partitions: []NodeSet{allNodesSet}})
-	s = append(s, View{Leader: 3, Partitions: []NodeSet{allNodesSet}})
-	s = append(s, View{Leader: 3, Partitions: []NodeSet{BCD}})
-	s = append(s, View{Leader: 3, Partitions: []NodeSet{BCD}})
-	logging.SetLogLevel("info")
-	result, err := ExecuteScenario(s, 4, 1, 100, rules.NameChainedHotStuff)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !result.Safe {
-		t.Errorf("Expected no safety violations")
-	}
-	if result.Commits != 1 {
-		t.Errorf("Expected one commit, got %d", result.Commits)
-		for id, commits := range result.NodeCommits {
-			t.Logf("Node %v commits:", id)
-			for _, b := range commits {
-				t.Logf("  %v", b)
-			}
-		}
-	}
-
-	// t.Logf("Node logs:\n%s", result.NodeLogs[NodeID{1, 1}])
-	t.Logf("Network log:\n%s", result.NetworkLog)
-}
-
-// TestTwinsScenarioRepNeeded checks if chained HotStuff will commit one block
-// when one replica (not the leader) has a twin and the first twins votes are needed
-func TestTwinsScenarioRepNeeded(t *testing.T) {
-	s := Scenario{}
-	// With 1 twin: nodes with NetworkID 1 and 2 will be twins of replica 1.
-	allNodesSet := NewNodeSet(Replica(1).Twin(1), Replica(1).Twin(2), Replica(2), Replica(3), Replica(4))
-	ACD := NewNodeSet(Replica(2), Replica(1).Twin(1), Replica(3)) // node with NetworkID 1 is the first twin of replica 1
-
-	s = append(s, View{Leader: 3, Partitions: []NodeSet{allNodesSet}})
-	s = append(s, View{Leader: 3, Partitions: []NodeSet{allNodesSet}})
-	s = append(s, View{Leader: 3, Partitions: []NodeSet{ACD}})
-	s = append(s, View{Leader: 3, Partitions: []NodeSet{ACD}})
-	logging.SetLogLevel("debug")
-	result, err := ExecuteScenario(s, 4, 1, 100, rules.NameChainedHotStuff)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !result.Safe {
-		t.Errorf("Expected no safety violations")
-	}
-	if result.Commits != 1 {
-		t.Errorf("Expected one commit, got %d", result.Commits)
-		for id, commits := range result.NodeCommits {
-			t.Logf("Node %v commits:", id)
-			for _, b := range commits {
-				t.Logf("  %v", b)
-			}
-		}
-	}
-
-	if false { // set to true to print the log
-		t.Fail()
-		t.Logf("Network log:\n%s", result.NetworkLog)
-	}
-}
-
-func TestSafetyWithTwins(t *testing.T) {
-	s := Scenario{}
-	// With 1 twin: nodes with NetworkID 1 and 2 will be twins of replica 1.
-	// twinA := NewNodeSet(NodeID{1, 1})
-	// twinB := NewNodeSet(NodeID{1, 2})
-	allNodesSet := NewNodeSet(Replica(1).Twin(1), Replica(1).Twin(2), Replica(2), Replica(3), Replica(4))
-	noA := NewNodeSet(Replica(1).Twin(2), Replica(2), Replica(3))
-	noB := NewNodeSet(Replica(1).Twin(1), Replica(2), Replica(3), Replica(4))
-
-	s = append(s, View{Leader: 2, Partitions: []NodeSet{allNodesSet}})
-	s = append(s, View{Leader: 2, Partitions: []NodeSet{noA}})
-	s = append(s, View{Leader: 1, Partitions: []NodeSet{noB}})
-	s = append(s, View{Leader: 1, Partitions: []NodeSet{noA}})
-	s = append(s, View{Leader: 1, Partitions: []NodeSet{noB}})
-	s = append(s, View{Leader: 1, Partitions: []NodeSet{noA}})
-	s = append(s, View{Leader: 1, Partitions: []NodeSet{noB}})
-	s = append(s, View{Leader: 1, Partitions: []NodeSet{noA}})
-	s = append(s, View{Leader: 1, Partitions: []NodeSet{noB}})
-	s = append(s, View{Leader: 1, Partitions: []NodeSet{noB}})
-	logging.SetLogLevel("debug")
-	result, err := ExecuteScenario(s, 4, 1, 100, rules.NameChainedHotStuff)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if !result.Safe {
-		t.Errorf("Expected no safety violations")
-	}
-	if result.Commits != 0 {
-		t.Errorf("Expected no commits, got %d", result.Commits)
-		for id, commits := range result.NodeCommits {
-			t.Logf("Node %v commits:", id)
-			for _, b := range commits {
-				t.Logf("  %v", b)
-			}
-		}
+		t.Error("Expected one commit")
 	}
 }

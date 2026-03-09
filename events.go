@@ -14,17 +14,24 @@ type ProposeMsg struct {
 	ID          ID           // The ID of the replica who sent the message.
 	Block       *Block       // The block that is proposed.
 	AggregateQC *AggregateQC // Optional AggregateQC
+	NVC         *NewViewCert
 }
 
-func NewProposeMsg(id ID, view View, qc QuorumCert, cmd *clientpb.Batch) ProposeMsg {
+func NewProposeMsg(id ID, view View, cert Cert, cmd *clientpb.Batch) ProposeMsg {
 	return ProposeMsg{
 		ID:    id,
-		Block: NewBlock(qc.BlockHash(), qc, cmd, view, id),
+		Block: NewBlock(cert.BlockHash(), cert, cmd, view, id),
 	}
 }
 
 func (p ProposeMsg) String() string {
 	return fmt.Sprintf("ID %d, %s, AggQC: %v", p.ID, p.Block, p.AggregateQC != nil)
+}
+
+type SeenMsg struct {
+	ID              ID
+	SeenPartialCert SeenPartialCert
+	Deferred        bool
 }
 
 // VoteMsg is sent to the leader by replicas voting on a proposal.
@@ -45,6 +52,7 @@ type TimeoutMsg struct {
 	ViewSignature QuorumSignature // A signature of the view
 	MsgSignature  QuorumSignature // A signature of the view, QC.BlockHash, and the replica ID
 	SyncInfo      SyncInfo        // The highest QC/TC known to the sender.
+	Votes         *VoteSignatureSet
 }
 
 // ToBytes returns a byte form of the timeout message.
@@ -54,6 +62,12 @@ func (timeout TimeoutMsg) ToBytes() []byte {
 	_, _ = b.Write(timeout.View.ToBytes())
 	if qc, ok := timeout.SyncInfo.QC(); ok {
 		_, _ = b.Write(qc.ToBytes())
+	}
+	if qc, ok := timeout.SyncInfo.QSC(); ok {
+		_, _ = b.Write(qc.ToBytes())
+	}
+	if nil != timeout.Votes {
+		_, _ = b.Write(timeout.Votes.ToBytes())
 	}
 	return b.Bytes()
 }

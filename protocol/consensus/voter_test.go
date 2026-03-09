@@ -1,6 +1,7 @@
 package consensus_test
 
 import (
+	"github.com/relab/hotstuff/protocol/propagator"
 	"testing"
 
 	"github.com/relab/hotstuff"
@@ -28,6 +29,7 @@ func wireUpVoter(
 	viewStates, err := protocol.NewViewStates(
 		essentials.Blockchain(),
 		essentials.Authority(),
+		essentials.RuntimeCfg(),
 	)
 	check(t, err)
 	committer := consensus.NewCommitter(
@@ -46,11 +48,35 @@ func wireUpVoter(
 		essentials.Authority(),
 		viewStates,
 	)
+
+	voteCollector := propagator.NewVoteCollector(essentials.RuntimeCfg())
+	seenMachine := votingmachine.NewSeenMachine(
+		essentials.Logger(),
+		essentials.EventLoop(),
+		essentials.RuntimeCfg(),
+		essentials.Blockchain(),
+		essentials.Authority(),
+		viewStates,
+	)
+	propagator := propagator.NewPropagator(
+		essentials.RuntimeCfg(),
+		essentials.EventLoop(),
+		essentials.Logger(),
+		leaderRotation,
+		viewStates,
+		essentials.Authority(),
+		voteCollector,
+		essentials.Blockchain(),
+		essentials.MockSender(),
+		seenMachine,
+	)
+
 	comm := comm.NewClique(
 		essentials.RuntimeCfg(),
 		votingMachine,
 		leaderRotation,
 		essentials.MockSender(),
+		propagator,
 	)
 	voter := consensus.NewVoter(
 		essentials.RuntimeCfg(),
@@ -59,6 +85,7 @@ func wireUpVoter(
 		comm,
 		essentials.Authority(),
 		committer,
+		essentials.Blockchain(),
 	)
 	return voter
 }

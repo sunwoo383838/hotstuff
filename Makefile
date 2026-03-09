@@ -15,26 +15,14 @@ GOCOVERDIR := .log/coverage-data
 
 CSV ?= wonderproxy.csv
 
-.PHONY: all coverage test short aws wonderproxy latencies debug clean protos download tools act help $(binaries)
+.PHONY: all coverage test short aws wonderproxy latencies debug clean protos download tools $(binaries)
 
-.DEFAULT_GOAL := help
+all: $(binaries)
 
-help: ## Show this help message
-	@echo 'Usage: make [target]'
-	@echo ''
-	@echo 'Available targets:'
-	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  %-15s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
-	@echo ''
-	@echo 'Tip: Test logs are saved to .log/ directory. Search for failures with:'
-	@echo '  grep -i "FAIL" .log/test.log'
-	@echo '  grep -i "FAIL" .log/act.log'
-
-all: $(binaries) ## Build all binaries (hotstuff, plot)
-
-coverage: $(coverage_bin) ## Build and run coverage tests
+coverage: $(coverage_bin)
 
 debug: GCFLAGS += -gcflags='all=-N -l'
-debug: $(binaries) ## Build binaries with debug symbols
+debug: $(binaries)
 
 $(binaries): protos
 	@go build -o ./$@ $(GCFLAGS) ./cmd/$@
@@ -54,43 +42,34 @@ coverage: $(coverage_bin)
 	@echo "- Browser view:   go tool cover -html=$(GOCOVERDIR)/cov.txt"
 	@echo "- Terminal view:  go tool cover -func=$(GOCOVERDIR)/cov.txt"
 
-protos: $(proto_go) $(gorums_go) ## Generate protobuf code
+protos: $(proto_go) $(gorums_go)
 
-download: ## Download Go module dependencies
+download:
 	@go mod download
 
-tools: download ## Install development tools
+tools: download
 	go install tool
 
-test: ## Run all tests with verbose output (logs to .log/test.log)
-	@mkdir -p .log
-	@echo "Running tests always (not cached)... (output in .log/test.log)"
-	@go test -count=1 -v ./... > .log/test.log 2>&1 && echo "Tests passed! See .log/test.log for details" || (echo "Tests failed! See .log/test.log for details" && exit 1)
+test:
+	@go test -v ./... > test.log
 
-short: ## Run short tests only
+short:
 	@go test -short ./...
 
-lint: ## Run golangci-lint
+lint:
 	@golangci-lint run ./...
 
-act: ## Run GitHub Actions tests locally with act (logs to .log/act.log)
-	@mkdir -p .log
-	@echo "Running GitHub Actions tests locally with act..."
-	@echo "Note: TestDeployment will be skipped (docker-in-docker not supported in act)"
-	@echo "Output will be saved to .log/act.log"
-	@act -j test --container-architecture linux/amd64 --matrix platform:ubuntu-latest > .log/act.log 2>&1 && echo "Tests passed! See .log/act.log for details" || (echo "Tests failed! See .log/act.log for details" && exit 1)
-
-clean: ## Remove built binaries
+clean:
 	@rm -fv $(binaries)
 
-latencies: ## Generate latency matrix from CSV file (use CSV=file.csv to specify)
+latencies:
 	@echo "Generating Latency Matrix using $(CSV)"
 	@go run cmd/latencygen/main.go -file "$(CSV)"
 
-wonderproxy: ## Generate latency matrix from wonderproxy.csv
+wonderproxy:
 	@$(MAKE) latencies CSV=wonderproxy.csv
 
-aws: ## Generate latency matrix from aws.csv
+aws:
 	@$(MAKE) latencies CSV=aws.csv
 
 %.pb.go %_gorums.pb.go : %.proto

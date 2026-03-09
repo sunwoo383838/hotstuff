@@ -3,7 +3,6 @@ package network
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 
@@ -35,7 +34,7 @@ type GorumsSender struct {
 }
 
 func NewGorumsSender(
-	el *eventloop.EventLoop,
+	eventLoop *eventloop.EventLoop,
 	logger logging.Logger,
 	config *core.RuntimeConfig,
 
@@ -51,7 +50,7 @@ func NewGorumsSender(
 	mgrOpts = append(mgrOpts, gorums.WithGrpcDialOptions(grpcOpts...))
 
 	s := &GorumsSender{
-		eventLoop: el,
+		eventLoop: eventLoop,
 		logger:    logger,
 		config:    config,
 
@@ -60,12 +59,12 @@ func NewGorumsSender(
 	}
 
 	// We delay processing `replicaConnected` events until after the configurations `connected` event has occurred.
-	eventloop.Register(el, func(event hotstuff.ReplicaConnectedEvent) {
+	s.eventLoop.RegisterHandler(hotstuff.ReplicaConnectedEvent{}, func(event any) {
 		if !s.connected {
-			eventloop.DelayUntil[ConnectedEvent](el, event)
+			s.eventLoop.DelayUntil(ConnectedEvent{}, event)
 			return
 		}
-		s.replicaConnected(event)
+		s.replicaConnected(event.(hotstuff.ReplicaConnectedEvent))
 	})
 	return s
 }
@@ -173,8 +172,9 @@ func (s *GorumsSender) RequestBlock(ctx context.Context, hash hotstuff.Hash) (*h
 	cfg := s.pbCfg
 	protoBlock, err := cfg.RequestBlock(ctx, &hotstuffpb.BlockHash{Hash: hash[:]})
 	if err != nil {
+		qcErr, ok := err.(gorums.QuorumCallError)
 		// filter out context errors
-		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		if !ok || (qcErr.Reason != context.Canceled.Error() && qcErr.Reason != context.DeadlineExceeded.Error()) {
 			s.logger.Infof("Failed to fetch block: %v", err)
 		}
 		return nil, false
@@ -199,11 +199,30 @@ func (s *GorumsSender) NewView(id hotstuff.ID, msg hotstuff.SyncInfo) error {
 
 // Vote sends the partial certificate to the other replica.
 func (s *GorumsSender) Vote(id hotstuff.ID, cert hotstuff.PartialCert) error {
+	if s.config.HasNVC() {
+		cfg := s.pbCfg
+		ctx, cancel := s.eventLoop.TimeoutContext()
+		defer cancel()
+		cfg.GossipVote(
+			ctx,
+			hotstuffpb.PartialCertToProto(cert),
+		)
+		return nil
+	}
 	r, ok := s.replicas[id]
 	if !ok {
 		return fmt.Errorf("replica does not exist (id=%d)", id)
 	}
 	r.vote(cert)
+	return nil
+}
+
+func (s *GorumsSender) SendSeen(id hotstuff.ID, cert hotstuff.SeenPartialCert) error {
+	r, ok := s.replicas[id]
+	if !ok {
+		return fmt.Errorf("replica does not exist (id=%d)", id)
+	}
+	r.sendSeen(cert)
 	return nil
 }
 

@@ -24,7 +24,7 @@ func NewCore(
 	logger := logging.New(fmt.Sprintf("%s%d", logTag, id))
 	return &Core{
 		config:    core.NewRuntimeConfig(id, privKey, opts...),
-		eventLoop: eventloop.New(logger, 100),
+		eventLoop: eventloop.New(logger, 300),
 		logger:    logger,
 	}
 }

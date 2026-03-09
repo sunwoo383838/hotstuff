@@ -3,6 +3,7 @@ package metrics
 import (
 	"time"
 
+	"github.com/relab/hotstuff"
 	"github.com/relab/hotstuff/client"
 	"github.com/relab/hotstuff/core/eventloop"
 	"github.com/relab/hotstuff/metrics/types"
@@ -10,42 +11,44 @@ import (
 
 const NameClientLatency = "client-latency"
 
-// clientLatency measures the latency of client requests.
+// clientLatency processes LatencyMeasurementEvents, and writes LatencyMeasurements to the metrics logger.
 type clientLatency struct {
 	metricsLogger Logger
-	id            client.ID
-	wf            Welford
+	id            hotstuff.ID
+
+	wf Welford
 }
 
-// enableClientLatency enables client latency measurement.
 func enableClientLatency(
-	el *eventloop.EventLoop,
+	eventLoop *eventloop.EventLoop,
 	metricsLogger Logger,
-	id client.ID,
+	id hotstuff.ID,
 ) {
 	lr := &clientLatency{
 		id:            id,
 		metricsLogger: metricsLogger,
 	}
-	eventloop.Register(el, func(event client.LatencyMeasurementEvent) {
-		lr.addLatency(event.Latency)
+
+	eventLoop.RegisterHandler(client.LatencyMeasurementEvent{}, func(event any) {
+		latencyEvent := event.(client.LatencyMeasurementEvent)
+		lr.addLatency(latencyEvent.Latency)
 	})
-	eventloop.Register(el, func(tickEvent types.TickEvent) {
-		lr.tick(tickEvent)
+
+	eventLoop.RegisterHandler(types.TickEvent{}, func(event any) {
+		lr.tick(event.(types.TickEvent))
 	}, eventloop.Prioritize())
 }
 
-// addLatency adds a latency data point to the current measurement.
+// AddLatency adds a latency data point to the current measurement.
 func (lr *clientLatency) addLatency(latency time.Duration) {
 	millis := float64(latency) / float64(time.Millisecond)
 	lr.wf.Update(millis)
 }
 
-// tick logs the current latency measurement to the metrics logger.
 func (lr *clientLatency) tick(_ types.TickEvent) {
 	mean, variance, count := lr.wf.Get()
 	event := &types.LatencyMeasurement{
-		Event:    types.NewClientEvent(lr.id, time.Now()),
+		Event:    types.NewClientEvent(uint32(lr.id), time.Now()),
 		Latency:  mean,
 		Variance: variance,
 		Count:    count,

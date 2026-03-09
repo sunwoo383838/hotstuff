@@ -5,11 +5,14 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"github.com/relab/hotstuff/protocol/propagator"
+	"github.com/relab/hotstuff/protocol/votingmachine"
 	"io"
 	"net"
 	"strconv"
 	"time"
 
+	"github.com/relab/gorums"
 	"github.com/relab/hotstuff"
 	"github.com/relab/hotstuff/client"
 	"github.com/relab/hotstuff/core"
@@ -24,6 +27,7 @@ import (
 	"github.com/relab/hotstuff/network"
 	"github.com/relab/hotstuff/protocol"
 	"github.com/relab/hotstuff/replica"
+	"github.com/relab/hotstuff/security/cert"
 	"github.com/relab/hotstuff/security/crypto"
 	"github.com/relab/hotstuff/security/crypto/keygen"
 	"github.com/relab/hotstuff/server"
@@ -53,7 +57,7 @@ type Worker struct {
 	measurementInterval time.Duration
 
 	replicas map[hotstuff.ID]*replica.Replica
-	clients  map[client.ID]*client.Client
+	clients  map[hotstuff.ID]*client.Client
 }
 
 // Run runs the worker until it receives a command to quit.
@@ -101,7 +105,7 @@ func NewWorker(send *protostream.Writer, recv *protostream.Reader, dl metrics.Lo
 		metrics:             metrics,
 		measurementInterval: measurementInterval,
 		replicas:            make(map[hotstuff.ID]*replica.Replica),
-		clients:             make(map[client.ID]*client.Client),
+		clients:             make(map[hotstuff.ID]*client.Client),
 	}
 }
 
@@ -143,15 +147,15 @@ func (w *Worker) createReplica(opts *orchestrationpb.ReplicaOpts) (*replica.Repl
 		return nil, err
 	}
 	// setup core - used in replica and measurement framework
-	runtimeOpts := []core.RuntimeOption{
-		core.WithCache(100), // TODO: consider making this configurable
-	}
+	runtimeOpts := []core.RuntimeOption{}
 	if opts.KauriEnabled() {
 		runtimeOpts = append(runtimeOpts, core.WithKauriTree(newTree(opts)))
 	}
 	if opts.GetConsensus() == rules.NameFastHotStuff {
 		// Use aggregated quorum certificates for Fast-HotStuff: https://arxiv.org/abs/2010.11454
 		runtimeOpts = append(runtimeOpts, core.WithAggregateQC())
+	} else if opts.GetConsensus() == rules.NameHotStuff1 {
+		runtimeOpts = append(runtimeOpts, core.WithNVC())
 	}
 	runtimeOpts = append(runtimeOpts, core.WithSharedRandomSeed(opts.GetSharedSeed()))
 	depsCore := wiring.NewCore(opts.HotstuffID(), "hs", privKey, runtimeOpts...)
@@ -209,11 +213,21 @@ func (w *Worker) createReplica(opts *orchestrationpb.ReplicaOpts) (*replica.Repl
 		depsCore.RuntimeCfg(),
 		sender,
 		base,
+		cert.WithCache(100), // TODO: consider making this configurable
 	)
 
-	consensusRules, viewStates, leaderRotation, comm, viewDuration, err := initConsensusModules(depsCore, depsSecure, sender, opts)
+	consensusRules, viewStates, leaderRotation, comm, viewDuration, propagator, voteCollector, err := initConsensusModules(depsCore, depsSecure, sender, opts)
 	if err != nil {
 		return nil, err
+	}
+
+	var timeoutRules synchronizer.TimeoutRuler
+	if depsCore.RuntimeCfg().HasAggregateQC() {
+		timeoutRules = synchronizer.NewAggregate(depsCore.RuntimeCfg(), depsSecure.Authority())
+	} else if depsCore.RuntimeCfg().HasNVC() {
+		timeoutRules = synchronizer.NewNVC(depsCore.RuntimeCfg(), depsSecure.Authority(), voteCollector, viewStates)
+	} else {
+		timeoutRules = synchronizer.NewSimple(depsCore.RuntimeCfg(), depsSecure.Authority())
 	}
 	return replica.New(
 		depsCore,
@@ -224,8 +238,10 @@ func (w *Worker) createReplica(opts *orchestrationpb.ReplicaOpts) (*replica.Repl
 		leaderRotation,
 		consensusRules,
 		viewDuration,
-		synchronizer.NewTimeoutRuler(depsCore.RuntimeCfg(), depsSecure.Authority()),
+		timeoutRules,
 		opts.GetBatchSize(),
+		propagator,
+		voteCollector,
 		replicaOpts...,
 	)
 }
@@ -241,6 +257,8 @@ func initConsensusModules(
 	leaderrotation.LeaderRotation,
 	comm.Communication,
 	synchronizer.ViewDuration,
+	*propagator.Propagator,
+	*propagator.VoteCollector,
 	error,
 ) {
 	depsCore.Logger().Debugf("Initializing module (consensus rules): %s", opts.GetConsensus())
@@ -251,7 +269,7 @@ func initConsensusModules(
 		opts.GetConsensus(),
 	)
 	if err != nil {
-		return nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, nil, err
 	}
 	if byzStrategy := opts.GetByzantineStrategy(); byzStrategy != "" {
 		depsCore.Logger().Debugf("Initializing module (byzantine strategy): %s", byzStrategy)
@@ -262,16 +280,17 @@ func initConsensusModules(
 			byzStrategy,
 		)
 		if err != nil {
-			return nil, nil, nil, nil, nil, err
+			return nil, nil, nil, nil, nil, nil, nil, err
 		}
 		consensusRules = byz
 	}
 	viewStates, err := protocol.NewViewStates(
 		depsSecure.Blockchain(),
 		depsSecure.Authority(),
+		depsCore.RuntimeCfg(),
 	)
 	if err != nil {
-		return nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, nil, err
 	}
 	depsCore.Logger().Debugf("Initializing module (leader rotation): %s", opts.GetLeaderRotation())
 	leaderRotation, err := leaderrotation.New(
@@ -282,8 +301,13 @@ func initConsensusModules(
 		opts.GetLeaderRotation(),
 		consensusRules.ChainLength(),
 	)
+	voteCollector := propagator.NewVoteCollector(depsCore.RuntimeCfg())
+	seenMachine := votingmachine.NewSeenMachine(depsCore.Logger(), depsCore.EventLoop(), depsCore.RuntimeCfg(),
+		depsSecure.Blockchain(), depsSecure.Authority(), viewStates)
+	propagator := propagator.NewPropagator(depsCore.RuntimeCfg(), depsCore.EventLoop(), depsCore.Logger(),
+		leaderRotation, viewStates, depsSecure.Authority(), voteCollector, depsSecure.Blockchain(), sender, seenMachine)
 	if err != nil {
-		return nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, nil, err
 	}
 	depsCore.Logger().Debugf("Initializing module (communication): %s", opts.GetCommunication())
 	comm, err := comm.New(
@@ -295,10 +319,11 @@ func initConsensusModules(
 		sender,
 		leaderRotation,
 		viewStates,
+		propagator,
 		opts.GetCommunication(),
 	)
 	if err != nil {
-		return nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, nil, err
 	}
 	var viewDuration synchronizer.ViewDuration
 	if opts.GetFixedTimeout().AsDuration() > 0 {
@@ -311,7 +336,7 @@ func initConsensusModules(
 			opts.GetTimeoutMultiplier(),
 		)
 	}
-	return consensusRules, viewStates, leaderRotation, comm, viewDuration, nil
+	return consensusRules, viewStates, leaderRotation, comm, viewDuration, propagator, voteCollector, nil
 }
 
 // newTree creates a new tree based on the provided options. It uses the aggregation
@@ -333,8 +358,8 @@ func newTree(opts *orchestrationpb.ReplicaOpts) *tree.Tree {
 }
 
 func (w *Worker) startReplicas(req *orchestrationpb.StartReplicaRequest) (*orchestrationpb.StartReplicaResponse, error) {
-	for _, id := range req.ReplicaIDs() {
-		replica, ok := w.replicas[id]
+	for _, id := range req.GetIDs() {
+		replica, ok := w.replicas[hotstuff.ID(id)]
 		if !ok {
 			return nil, status.Errorf(codes.NotFound, "The replica with ID %d was not found.", id)
 		}
@@ -347,7 +372,7 @@ func (w *Worker) startReplicas(req *orchestrationpb.StartReplicaRequest) (*orche
 			return nil, err
 		}
 
-		defer func(id hotstuff.ID) {
+		defer func(id uint32) {
 			w.metricsLogger.Log(&types.StartEvent{Event: types.NewReplicaEvent(id, time.Now())})
 			replica.Start()
 		}(id)
@@ -381,17 +406,21 @@ func (w *Worker) startClients(req *orchestrationpb.StartClientRequest) (*orchest
 		w.metricsLogger.Log(opts)
 
 		c := client.Config{
-			TLS:              opts.GetUseTLS(),
-			RootCAs:          cp,
-			MaxConcurrent:    opts.GetMaxConcurrent(),
-			PayloadSize:      opts.GetPayloadSize(),
-			Input:            io.NopCloser(rand.Reader),
+			TLS:           opts.GetUseTLS(),
+			RootCAs:       cp,
+			MaxConcurrent: opts.GetMaxConcurrent(),
+			PayloadSize:   opts.GetPayloadSize(),
+			Input:         io.NopCloser(rand.Reader),
+			ManagerOptions: []gorums.ManagerOption{
+				gorums.WithDialTimeout(opts.GetConnectTimeout().AsDuration()),
+			},
 			RateLimit:        opts.GetRateLimit(),
 			RateStep:         opts.GetRateStep(),
 			RateStepInterval: opts.GetRateStepInterval().AsDuration(),
 			Timeout:          opts.GetTimeout().AsDuration(),
 		}
-		logger := logging.New("cli" + opts.ClientIDString())
+		runtimeCfg := core.NewRuntimeConfig(hotstuff.ID(opts.GetID()), nil)
+		logger := logging.New("cli" + strconv.Itoa(int(opts.GetID())))
 		eventLoop := eventloop.New(logger, 1000)
 
 		if w.measurementInterval > 0 {
@@ -399,7 +428,7 @@ func (w *Worker) startClients(req *orchestrationpb.StartClientRequest) (*orchest
 				eventLoop,
 				logger,
 				w.metricsLogger,
-				opts.ClientID(),
+				runtimeCfg.ID(),
 				w.measurementInterval,
 				w.metrics...,
 			)
@@ -411,7 +440,7 @@ func (w *Worker) startClients(req *orchestrationpb.StartClientRequest) (*orchest
 		cli := client.New(
 			eventLoop,
 			logger,
-			opts.ClientID(),
+			runtimeCfg,
 			c,
 		)
 		cfg, err := getConfiguration(req.GetConfiguration(), true)
@@ -423,15 +452,15 @@ func (w *Worker) startClients(req *orchestrationpb.StartClientRequest) (*orchest
 			return nil, err
 		}
 		cli.Start()
-		w.metricsLogger.Log(&types.StartEvent{Event: types.NewClientEvent(opts.ClientID(), time.Now())})
-		w.clients[opts.ClientID()] = cli
+		w.metricsLogger.Log(&types.StartEvent{Event: types.NewClientEvent(opts.GetID(), time.Now())})
+		w.clients[hotstuff.ID(opts.GetID())] = cli
 	}
 	return &orchestrationpb.StartClientResponse{}, nil
 }
 
 func (w *Worker) stopClients(req *orchestrationpb.StopClientRequest) (*orchestrationpb.StopClientResponse, error) {
-	for _, id := range req.ClientIDs() {
-		cli, ok := w.clients[id]
+	for _, id := range req.GetIDs() {
+		cli, ok := w.clients[hotstuff.ID(id)]
 		if !ok {
 			return nil, status.Errorf(codes.NotFound, "the client with ID %d was not found", id)
 		}

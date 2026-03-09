@@ -32,7 +32,7 @@ config: {
 	}
 
 	// Consensus algorithm to use. (Default: "chainedhotstuff")
-	consensus: *"chainedhotstuff" | "simplehotstuff" | "fasthotstuff"
+	consensus: *"chainedhotstuff" | "simplehotstuff" | "fasthotstuff" | "hotstuff1"
 	// Leader rotation strategy to use. (Default: "round-robin")
 	leaderRotation: *"round-robin" | "fixed" | "carousel" | "reputation"
 	// Cryptographic algorithm to use. (Default: "ecdsa")
@@ -43,7 +43,21 @@ config: {
 	// Byzantine strategy for different replicas (optional).
 	byzantineStrategy?: {
 		silentproposer?: [...int & >=1 & <=replicas]
-		fork?: [...int & >=1 & <=replicas]
-		increaseview?: [...int & >=1 & <=replicas]
+		slow?: [...int & >=1 & <=replicas]
+	}
+
+	terraform?: {
+		// EC2 인스턴스 타입 (예: "c7g.2xlarge", "c6i.2xlarge" 등)
+		instanceType: string
+		// 루트 디스크 크기 (GB)
+		diskSizeGB: int & >0
+		// Spot 인스턴스 사용 여부
+		useSpotInstances: bool | *false
+		// AWS Spot 종료 액션
+		// (GCP의 "DELETE"/"STOP" 대신 AWS 값으로 교체)
+		spotTerminationAction: *"terminate" | "stop" | "hibernate"
+		// 사용할 AWS 리전 목록 (예: ["us-east-1", "us-east-2"])
+		// 비어있지 않은 리스트로 강제
+		regions: [_, ...string]
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"github.com/relab/hotstuff"
 	"github.com/relab/hotstuff/core"
 	"github.com/relab/hotstuff/protocol/leaderrotation"
+	"github.com/relab/hotstuff/protocol/propagator"
 	"github.com/relab/hotstuff/protocol/votingmachine"
 )
 
@@ -15,6 +16,7 @@ type Clique struct {
 	votingMachine  *votingmachine.VotingMachine
 	leaderRotation leaderrotation.LeaderRotation
 	sender         core.Sender
+	propagator     *propagator.Propagator
 }
 
 // NewClique creates a new Clique instance for communicating proposals and votes.
@@ -23,12 +25,14 @@ func NewClique(
 	votingMachine *votingmachine.VotingMachine,
 	leaderRotation leaderrotation.LeaderRotation,
 	sender core.Sender,
+	propagator *propagator.Propagator,
 ) *Clique {
 	return &Clique{
 		config:         config,
 		votingMachine:  votingMachine,
 		leaderRotation: leaderRotation,
 		sender:         sender,
+		propagator:     propagator,
 	}
 }
 
@@ -42,7 +46,12 @@ func (hs *Clique) Disseminate(proposal *hotstuff.ProposeMsg, pc hotstuff.Partial
 func (hs *Clique) Aggregate(proposal *hotstuff.ProposeMsg, pc hotstuff.PartialCert) error {
 	nextView := proposal.Block.View() + 1
 	leaderID := hs.leaderRotation.GetLeader(nextView)
-	if leaderID == hs.config.ID() {
+	if hs.config.HasNVC() {
+		hs.propagator.OnVote(hotstuff.VoteMsg{
+			ID:          hs.config.ID(),
+			PartialCert: pc,
+		})
+	} else if leaderID == hs.config.ID() {
 		// if I am the leader in the next view, collect the vote for myself beforehand.
 		hs.votingMachine.CollectVote(hotstuff.VoteMsg{
 			ID:          hs.config.ID(),
@@ -50,7 +59,7 @@ func (hs *Clique) Aggregate(proposal *hotstuff.ProposeMsg, pc hotstuff.PartialCe
 		})
 		return nil
 	}
-	// if I am the one voting, send the vote to next leader over the wire.
+
 	return hs.sender.Vote(leaderID, pc)
 }
 

@@ -28,7 +28,7 @@ const (
 // EDDSASignature is an EDDSA signature.
 type EDDSASignature struct {
 	signer hotstuff.ID
-	sig    []byte
+	sign   []byte
 }
 
 // RestoreEDDSASignature restores an existing signature.
@@ -45,7 +45,7 @@ func (sig EDDSASignature) Signer() hotstuff.ID {
 // ToBytes returns a raw byte string representation of the signature.
 func (sig EDDSASignature) ToBytes() []byte {
 	var b []byte
-	b = append(b, sig.sig...)
+	b = append(b, sig.sign...)
 	return b
 }
 
@@ -66,12 +66,10 @@ func (ed *EDDSA) privateKey() ed25519.PrivateKey {
 }
 
 // Sign creates a cryptographic signature of the given message.
-func (ed *EDDSA) Sign(message []byte) (hotstuff.QuorumSignature, error) {
-	sig := ed25519.Sign(ed.privateKey(), message)
-	return NewMulti(&EDDSASignature{
-		sig:    sig,
-		signer: ed.config.ID(),
-	}), nil
+func (ed *EDDSA) Sign(message []byte) (signature hotstuff.QuorumSignature, err error) {
+	sign := ed25519.Sign(ed.privateKey(), message)
+	eddsaSign := &EDDSASignature{signer: ed.config.ID(), sign: sign}
+	return Multi[*EDDSASignature]{ed.config.ID(): eddsaSign}, nil
 }
 
 // Combine combines multiple signatures into a single signature.
@@ -79,14 +77,15 @@ func (ed *EDDSA) Combine(signatures ...hotstuff.QuorumSignature) (hotstuff.Quoru
 	if len(signatures) < 2 {
 		return nil, ErrCombineMultiple
 	}
-	ts := make(Multi[*EDDSASignature], 0, len(signatures)*2) // preallocate some space
+
+	ts := make(Multi[*EDDSASignature])
 	for _, sig1 := range signatures {
 		if sig2, ok := sig1.(Multi[*EDDSASignature]); ok {
-			for _, s := range sig2 {
-				if ts.Contains(s.Signer()) { // has duplicate
+			for id, s := range sig2 {
+				if _, duplicate := ts[id]; duplicate {
 					return nil, ErrCombineOverlap
 				}
-				ts = append(ts, s)
+				ts[id] = s
 			}
 		} else {
 			return nil, fmt.Errorf("eddsa: cannot combine signature of incompatible type %T (expected %T)", sig1, sig2)
@@ -114,7 +113,7 @@ func (ed *EDDSA) Verify(signature hotstuff.QuorumSignature, message []byte) erro
 	}
 	var err error
 	for range s {
-		err = errors.Join(err, <-results)
+		err = errors.Join(<-results)
 	}
 	if err != nil {
 		return err
@@ -135,8 +134,8 @@ func (ed *EDDSA) BatchVerify(signature hotstuff.QuorumSignature, batch map[hotst
 
 	results := make(chan error, n)
 	set := make(map[hotstuff.Hash]struct{})
-	for _, sig := range s {
-		message, ok := batch[sig.Signer()]
+	for id, sig := range s {
+		message, ok := batch[id]
 		if !ok {
 			return fmt.Errorf("eddsa: message not found")
 		}
@@ -148,7 +147,7 @@ func (ed *EDDSA) BatchVerify(signature hotstuff.QuorumSignature, batch map[hotst
 	}
 	var err error
 	for range s {
-		err = errors.Join(err, <-results)
+		err = errors.Join(<-results)
 	}
 	if err != nil {
 		return err
@@ -166,7 +165,7 @@ func (ed *EDDSA) verifySingle(sig *EDDSASignature, message []byte) error {
 		return fmt.Errorf("eddsa: failed to verify signature from replica %d: unknown replica", sig.Signer())
 	}
 	pk := replica.PubKey.(ed25519.PublicKey)
-	if !ed25519.Verify(pk, message, sig.sig) {
+	if !ed25519.Verify(pk, message, sig.sign) {
 		return fmt.Errorf("eddsa: failed to verify signature from replica %d", sig.Signer())
 	}
 	return nil

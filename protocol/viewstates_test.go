@@ -13,7 +13,7 @@ import (
 
 func TestNextView(t *testing.T) {
 	essentials := testutil.WireUpEssentials(t, 1, crypto.NameECDSA)
-	states, err := protocol.NewViewStates(essentials.Blockchain(), essentials.Authority())
+	states, err := protocol.NewViewStates(essentials.Blockchain(), essentials.Authority(), essentials.RuntimeCfg())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -26,7 +26,7 @@ func TestNextView(t *testing.T) {
 func TestUpdateCerts(t *testing.T) {
 	set := testutil.NewEssentialsSet(t, 4, crypto.NameECDSA)
 	subject := set[0]
-	states, err := protocol.NewViewStates(subject.Blockchain(), subject.Authority())
+	states, err := protocol.NewViewStates(subject.Blockchain(), subject.Authority(), subject.RuntimeCfg())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func TestUpdateCommit(t *testing.T) {
 		1,
 	)
 	essentials := testutil.WireUpEssentials(t, 1, crypto.NameECDSA)
-	states, err := protocol.NewViewStates(essentials.Blockchain(), essentials.Authority())
+	states, err := protocol.NewViewStates(essentials.Blockchain(), essentials.Authority(), essentials.RuntimeCfg())
 	if err != nil {
 		t.Fatal(err)
 	}

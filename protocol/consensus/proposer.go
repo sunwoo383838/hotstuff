@@ -63,12 +63,12 @@ func (p *Proposer) markProposed(view hotstuff.View, highQCBlockHash hotstuff.Has
 	}
 	for qcBlock.View() > p.lastProposed {
 		p.commandCache.Proposed(qcBlock.Commands()) // mark as proposed
-		qc := qcBlock.QuorumCert()
-		qcBlock, ok = p.blockchain.Get(qc.BlockHash())
+		cert := qcBlock.Cert()
+		qcBlock, ok = p.blockchain.Get(cert.BlockHash())
 		if !ok {
 			return fmt.Errorf(
 				"failed to mark proposed: qcBlock not found: %s",
-				qc.BlockHash().SmallString())
+				cert.BlockHash().SmallString())
 		}
 	}
 	p.lastProposed = view
@@ -99,8 +99,13 @@ func (p *Proposer) CreateProposal(syncInfo hotstuff.SyncInfo) (proposal hotstuff
 	ctx, cancel := p.eventLoop.TimeoutContext()
 	defer cancel()
 	view := p.states.View()
-	highQC := p.states.HighQC()
-	if err := p.markProposed(view, highQC.BlockHash()); err != nil {
+	var highCert hotstuff.Cert
+	if p.config.HasNVC() {
+		highCert = p.states.HighQSC()
+	} else {
+		highCert = p.states.HighQC()
+	}
+	if err := p.markProposed(view, highCert.BlockHash()); err != nil {
 		return proposal, err
 	}
 	// TODO(meling): Should this return a partially filled batch if there is a timeout? What is the timeout? Right now, it returns nil if ctx is canceled.
@@ -113,7 +118,7 @@ func (p *Proposer) CreateProposal(syncInfo hotstuff.SyncInfo) (proposal hotstuff
 	}
 	// ensure that a proposal can be sent based on the protocol's rule.
 	// NOTE: the ruler will create the proposal too.
-	proposal, ok := p.ruler.ProposeRule(view, syncInfo, cmdBatch)
+	proposal, ok := p.ruler.ProposeRule(view, highCert, syncInfo, cmdBatch)
 	if !ok {
 		return proposal, fmt.Errorf("propose rule not satisfied")
 	}

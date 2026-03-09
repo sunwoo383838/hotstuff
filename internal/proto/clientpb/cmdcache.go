@@ -2,6 +2,7 @@
 package clientpb
 
 import (
+	"container/list"
 	"context"
 	"slices"
 	"sync"
@@ -9,22 +10,32 @@ import (
 
 type CommandCache struct {
 	mut              sync.Mutex
+	c                chan struct{}
 	batchSize        uint32
 	clientSeqNumbers map[uint32]uint64 // highest proposed sequence number per client ID
-	cache            []*Command
-	ready            chan struct{} // signals when a batch is ready
+	cache            list.List
 }
 
 func NewCommandCache(batchSize uint32) *CommandCache {
-	return &CommandCache{
+	c := &CommandCache{
+		c:                make(chan struct{}),
 		batchSize:        batchSize,
 		clientSeqNumbers: make(map[uint32]uint64),
-		cache:            make([]*Command, 0),
-		ready:            make(chan struct{}, 1), // buffered to avoid blocking Add
 	}
+	return c
 }
 
-// Add adds a command to the cache and notifies waiting Get calls if a batch can be formed.
+func (c *CommandCache) len() uint32 {
+	return uint32(c.cache.Len())
+}
+
+// isDuplicate returns true if the given command has already been processed.
+// Callers must hold the lock to access the underlying clientSeqNumbers map.
+func (c *CommandCache) isDuplicate(cmd *Command) bool {
+	seqNum := c.clientSeqNumbers[cmd.GetClientID()]
+	return seqNum >= cmd.GetSequenceNumber()
+}
+
 func (c *CommandCache) Add(cmd *Command) {
 	c.mut.Lock()
 	defer c.mut.Unlock()
@@ -32,9 +43,13 @@ func (c *CommandCache) Add(cmd *Command) {
 		// command is too old
 		return
 	}
-	c.cache = append(c.cache, cmd)
-	if c.hasFullBatch() {
-		c.signalReady()
+	c.cache.PushBack(cmd)
+	if c.len() >= c.batchSize {
+		// notify Get that we are ready to send a new batch.
+		select {
+		case c.c <- struct{}{}:
+		default:
+		}
 	}
 }
 
@@ -43,87 +58,45 @@ func (c *CommandCache) Add(cmd *Command) {
 // If the context is done, it returns an error.
 // NOTE: the commands should be marked as proposed to avoid duplicates.
 func (c *CommandCache) Get(ctx context.Context) (*Batch, error) {
-	for {
-		// Wait for either a batch to be ready or context cancellation
+	batch := new(Batch)
+
+	c.mut.Lock()
+awaitBatch:
+	// wait until we can send a new batch.
+	for c.len() < c.batchSize {
+		c.mut.Unlock()
 		select {
-		case <-c.ready:
-			// A batch might be ready
+		case <-c.c:
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
-
-		// Check if we have enough commands for a batch
 		c.mut.Lock()
-		if !c.hasFullBatch() {
-			// False alarm: not enough commands yet (race condition or duplicates filtered)
-			c.mut.Unlock()
-			continue
-		}
-
-		// Try to extract a full batch, filtering out duplicates
-		if batch := c.tryExtractBatch(); batch != nil {
-			// We have a full batch! Signal if more batches are ready in cache
-			if c.hasFullBatch() {
-				c.signalReady()
-			}
-
-			c.mut.Unlock()
-			return batch, nil
-		}
-
-		// We don't have a full batch yet. Keep the cache intact and wait for more commands
-		c.mut.Unlock()
 	}
-}
 
-// hasFullBatch returns true if the cache has enough commands for at least one full batch.
-// Callers must hold the lock.
-func (c *CommandCache) hasFullBatch() bool {
-	return uint32(len(c.cache)) >= c.batchSize
-}
-
-// signalReady sends a signal on the ready channel if it's not already signaled.
-// This is a non-blocking operation that notifies waiting Get() calls.
-// Callers must hold the lock.
-func (c *CommandCache) signalReady() {
-	select {
-	case c.ready <- struct{}{}:
-	default:
-		// channel already has a signal, no need to add another
-	}
-}
-
-// tryExtractBatch attempts to extract a full batch from the cache, filtering out duplicates.
-// If successful, removes the examined commands from the cache and returns the batch.
-// Returns nil if a full batch cannot be formed from available commands (cache is left unchanged).
-// Callers must hold the lock.
-func (c *CommandCache) tryExtractBatch() *Batch {
-	batch := &Batch{}
-	extracted := 0 // track how many commands we've examined in cache
-
-	for !batch.isFull(c.batchSize) && extracted < len(c.cache) {
-		cmd := c.cache[extracted]
-		extracted++
+	// Get the batch. Note that we may not be able to fill the batch,
+	// but that's okay as long as we can send at least one command.
+	for i := uint32(0); i < c.batchSize; i++ {
+		elem := c.cache.Front()
+		if elem == nil {
+			break
+		}
+		cmd := c.cache.Remove(elem).(*Command)
 		if c.isDuplicate(cmd) {
-			// command is too old, skip it
+			// command is too old
+			i--
 			continue
 		}
 		batch.Commands = append(batch.Commands, cmd)
 	}
 
-	if batch.isFull(c.batchSize) {
-		// We have a full batch! Remove the examined commands from cache
-		c.cache = c.cache[extracted:]
-		return batch
+	// if we still got no (new) commands, try to wait again
+	if len(batch.Commands) == 0 {
+		goto awaitBatch
 	}
-	return nil
-}
 
-// isDuplicate returns true if the given command has already been processed.
-// Callers must hold the lock.
-func (c *CommandCache) isDuplicate(cmd *Command) bool {
-	seqNum := c.clientSeqNumbers[cmd.GetClientID()]
-	return seqNum >= cmd.GetSequenceNumber()
+	c.mut.Unlock()
+
+	return batch, nil
 }
 
 // containsDuplicate returns true if the batch contains old commands already proposed.

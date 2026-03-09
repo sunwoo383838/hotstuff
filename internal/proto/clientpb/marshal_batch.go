@@ -15,8 +15,3 @@ func (b *Batch) Marshal() []byte {
 	}
 	return data
 }
-
-// isFull returns true if the batch contains the specified number of commands.
-func (b *Batch) isFull(batchSize uint32) bool {
-	return uint32(len(b.Commands)) == batchSize
-}

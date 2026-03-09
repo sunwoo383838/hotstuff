@@ -13,13 +13,16 @@ type emulatedSender struct {
 	node      *node
 	network   *Network
 	subConfig []hotstuff.ID
+
+	config *core.RuntimeConfig
 }
 
 // newSender returns a new emulated sender based on the node and network.
-func newSender(n *Network, node *node) *emulatedSender {
+func newSender(n *Network, node *node, config *core.RuntimeConfig) *emulatedSender {
 	return &emulatedSender{
 		network: n,
 		node:    node,
+		config:  config,
 	}
 }
 
@@ -43,29 +46,27 @@ func (s *emulatedSender) sendMessage(id hotstuff.ID, message any) {
 	if !ok {
 		panic(fmt.Errorf("attempt to send message to unknown replica %d", id))
 	}
-	effectiveView := s.node.EffectiveView()
 	for _, node := range nodes {
-		if s.shouldDrop(node.id, message, effectiveView) {
-			s.network.logger.Infof("view %d node %v -> node %v: DROP %T(%v)", effectiveView, s.node.id, node.id, message, message)
+		if s.shouldDrop(node.id, message) {
+			s.network.logger.Infof("node %v -> node %v: DROP %T(%v)", s.node.id, node.id, message, message)
 			continue
 		}
-		s.network.logger.Infof("view %d node %v -> node %v: SEND %T(%v)", effectiveView, s.node.id, node.id, message, message)
+		s.network.logger.Infof("node %v -> node %v: SEND %T(%v)", s.node.id, node.id, message, message)
 		s.network.pendingMessages = append(
 			s.network.pendingMessages,
 			pendingMessage{
-				sender:   s.node.id,
-				receiver: node.id,
+				sender:   uint32(s.node.id.NetworkID),
+				receiver: uint32(node.id.NetworkID),
 				message:  message,
-				view:     effectiveView,
 			},
 		)
 	}
 }
 
 // shouldDrop checks if a message to the node identified by id should be dropped.
-func (s *emulatedSender) shouldDrop(id NodeID, message any, view hotstuff.View) bool {
+func (s *emulatedSender) shouldDrop(id NodeID, message any) bool {
 	// retrieve the drop config for this node.
-	return s.network.shouldDrop(s.node.id, id, message, view)
+	return s.network.shouldDrop(s.node.id.NetworkID, id.NetworkID, message)
 }
 
 // Sub returns a subconfiguration containing the replicas specified in the ids slice.
@@ -75,6 +76,17 @@ func (s *emulatedSender) Sub(ids []hotstuff.ID) (sub core.Sender, err error) {
 		network:   s.network,
 		subConfig: ids,
 	}, nil
+}
+
+func (s *emulatedSender) SendSeen(id hotstuff.ID, cert hotstuff.SeenPartialCert) error {
+	if _, ok := s.network.replicas[id]; !ok {
+		return fmt.Errorf("replica with id %d not found", id)
+	}
+	s.sendMessage(id, hotstuff.SeenMsg{
+		ID:              s.node.id.ReplicaID,
+		SeenPartialCert: cert,
+	})
+	return nil
 }
 
 // Propose sends the block to all replicas in the configuration.
@@ -92,6 +104,13 @@ func (s *emulatedSender) Timeout(msg hotstuff.TimeoutMsg) {
 func (s *emulatedSender) Vote(id hotstuff.ID, cert hotstuff.PartialCert) error {
 	if _, ok := s.network.replicas[id]; !ok {
 		return fmt.Errorf("replica with id %d not found", id)
+	}
+	if s.config.HasNVC() {
+		s.broadcastMessage(hotstuff.VoteMsg{
+			ID:          s.node.id.ReplicaID,
+			PartialCert: cert,
+		})
+		return nil
 	}
 	s.sendMessage(id, hotstuff.VoteMsg{
 		ID:          s.node.id.ReplicaID,
@@ -117,7 +136,7 @@ func (s *emulatedSender) NewView(id hotstuff.ID, si hotstuff.SyncInfo) error {
 func (s *emulatedSender) RequestBlock(_ context.Context, hash hotstuff.Hash) (block *hotstuff.Block, ok bool) {
 	for _, replica := range s.network.replicas {
 		for _, node := range replica {
-			if s.shouldDrop(node.id, hash, s.node.EffectiveView()) {
+			if s.shouldDrop(node.id, hash) {
 				continue
 			}
 			block, ok = node.blockchain.LocalGet(hash)

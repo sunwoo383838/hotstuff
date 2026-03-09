@@ -59,6 +59,10 @@ func (bf Bitfield) Bytes() []byte {
 	return bf.data
 }
 
+func (bf Bitfield) ToBytes() []byte {
+	return bf.Bytes()
+}
+
 // Add adds an ID to the set.
 func (bf *Bitfield) Add(id hotstuff.ID) {
 	byteIdx, bitIdx := index(id)
@@ -88,7 +92,7 @@ func (bf Bitfield) ForEach(f func(hotstuff.ID)) {
 // RangeWhile calls f for each ID in the set until f returns false.
 func (bf Bitfield) RangeWhile(f func(hotstuff.ID) bool) {
 	for byteIdx := range bf.data {
-		for bitIdx := range 8 {
+		for bitIdx := 0; bitIdx < 8; bitIdx++ {
 			if bf.isSet(byteIdx, bitIdx) {
 				if !f(id(byteIdx, bitIdx)) {
 					return

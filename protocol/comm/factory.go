@@ -2,6 +2,7 @@ package comm
 
 import (
 	"fmt"
+	"github.com/relab/hotstuff/protocol/propagator"
 
 	"github.com/relab/hotstuff/core"
 	"github.com/relab/hotstuff/core/eventloop"
@@ -24,6 +25,7 @@ func New(
 	sender core.Sender,
 	leaderRotation leaderrotation.LeaderRotation,
 	viewStates *protocol.ViewStates,
+	propagator *propagator.Propagator,
 	name string,
 ) (communication Communication, _ error) {
 	switch name {
@@ -53,6 +55,7 @@ func New(
 			),
 			leaderRotation,
 			sender,
+			propagator,
 		)
 	default:
 		return nil, fmt.Errorf("invalid communication type: '%s'", name)

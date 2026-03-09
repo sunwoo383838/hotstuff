@@ -21,6 +21,7 @@ type Sender interface {
 	// Sub returns a new sender copy that is only allowed to send to the provided ids.
 	// Returns an error if the ids are not a subset of the parent's ids.
 	Sub(ids []hotstuff.ID) (Sender, error)
+	SendSeen(id hotstuff.ID, cert hotstuff.SeenPartialCert) error
 }
 
 // KauriSender is an extension of Sender allowing to send contribution messages to parent nodes.

@@ -3,6 +3,7 @@ package consensus
 import (
 	"errors"
 	"fmt"
+	"github.com/relab/hotstuff/security/blockchain"
 
 	"github.com/relab/hotstuff"
 	"github.com/relab/hotstuff/core"
@@ -17,6 +18,7 @@ type Voter struct {
 	leaderRotation leaderrotation.LeaderRotation
 	ruler          VoteRuler
 	aggregator     comm.Aggregator
+	blockchain     *blockchain.Blockchain
 
 	auth      *cert.Authority
 	committer *Committer
@@ -31,6 +33,7 @@ func NewVoter(
 	aggregator comm.Aggregator,
 	auth *cert.Authority,
 	committer *Committer,
+	blockchain *blockchain.Blockchain,
 ) *Voter {
 	v := &Voter{
 		config: config,
@@ -38,6 +41,7 @@ func NewVoter(
 		leaderRotation: leaderRotation,
 		ruler:          rules,
 		aggregator:     aggregator,
+		blockchain:     blockchain,
 
 		auth:      auth,
 		committer: committer,
@@ -103,9 +107,16 @@ func (v *Voter) Verify(proposal *hotstuff.ProposeMsg) (err error) {
 	if !v.ruler.VoteRule(blockView, *proposal) {
 		return fmt.Errorf("vote rule not satisfied")
 	}
-	// verify the proposal's quorum certificate(s).
-	if err := v.auth.VerifyAnyQC(proposal); err != nil {
+	err, commit := v.auth.VerifyAnyQC(proposal)
+	if err != nil {
 		return err
+	} else if commit {
+		parent, ok := v.blockchain.Get(proposal.Block.Parent())
+		if ok {
+			if err := v.committer.Commit(parent); err != nil {
+				return err
+			}
+		}
 	}
 	// ensure the block came from the expected leader.
 	leaderID := v.leaderRotation.GetLeader(blockView)

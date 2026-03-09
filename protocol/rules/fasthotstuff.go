@@ -12,21 +12,20 @@ import (
 const NameFastHotStuff = "fasthotstuff"
 
 // FastHotStuff is an implementation of the Fast-HotStuff protocol.
-// See the paper for details: https://arxiv.org/abs/2010.11454
 type FastHotStuff struct {
 	logger     logging.Logger
 	config     *core.RuntimeConfig
 	blockchain *blockchain.Blockchain
 }
 
-// NewFastHotStuff returns a new instance of the FastHotStuff consensus ruleset.
+// NewFastHotStuff returns a new instance of the Fast-HotStuff consensus ruleset.
 func NewFastHotStuff(
 	logger logging.Logger,
 	config *core.RuntimeConfig,
 	blockchain *blockchain.Blockchain,
 ) *FastHotStuff {
 	if !config.HasAggregateQC() {
-		panic(NameFastHotStuff + " requires aggregated quorum certificates")
+		panic("aggregate qc must be enabled for fasthotstuff")
 	}
 	return &FastHotStuff{
 		logger:     logger,
@@ -79,11 +78,8 @@ func (fhs *FastHotStuff) ChainLength() int {
 }
 
 // ProposeRule returns a new fast hotstuff proposal based on the current view, (aggregate) quorum certificate, and command batch.
-func (fhs *FastHotStuff) ProposeRule(view hotstuff.View, cert hotstuff.SyncInfo, cmd *clientpb.Batch) (proposal hotstuff.ProposeMsg, ok bool) {
-	qc, ok := cert.QC()
-	if !ok {
-		return proposal, false
-	}
+func (fhs *FastHotStuff) ProposeRule(view hotstuff.View, _ hotstuff.Cert, cert hotstuff.SyncInfo, cmd *clientpb.Batch) (proposal hotstuff.ProposeMsg, ok bool) {
+	qc, _ := cert.QC() // TODO: we should avoid cert does not contain a QC so we cannot fail here
 	proposal = hotstuff.NewProposeMsg(fhs.config.ID(), view, qc, cmd)
 	if aggQC, ok := cert.AggQC(); ok {
 		proposal.AggregateQC = &aggQC

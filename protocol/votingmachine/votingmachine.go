@@ -28,7 +28,7 @@ type VotingMachine struct {
 
 func New(
 	logger logging.Logger,
-	el *eventloop.EventLoop,
+	eventLoop *eventloop.EventLoop,
 	config *core.RuntimeConfig,
 	blockchain *blockchain.Blockchain,
 	auth *cert.Authority,
@@ -37,14 +37,19 @@ func New(
 	vm := &VotingMachine{
 		blockchain:    blockchain,
 		auth:          auth,
-		eventLoop:     el,
+		eventLoop:     eventLoop,
 		logger:        logger,
 		config:        config,
 		state:         state,
 		verifiedVotes: make(map[hotstuff.Hash][]hotstuff.PartialCert),
 	}
-	eventloop.Register(el, func(voteMsg hotstuff.VoteMsg) {
-		vm.CollectVote(voteMsg)
+
+	if config.HasNVC() {
+		return vm
+	}
+
+	vm.eventLoop.RegisterHandler(hotstuff.VoteMsg{}, func(event any) {
+		vm.CollectVote(event.(hotstuff.VoteMsg))
 	})
 	return vm
 }
@@ -65,7 +70,7 @@ func (vm *VotingMachine) CollectVote(vote hotstuff.VoteMsg) {
 			// hopefully, the block has arrived by then.
 			vm.logger.Debugf("Local cache miss for block: %s", cert.BlockHash().SmallString())
 			vote.Deferred = true
-			eventloop.DelayUntil[hotstuff.ProposeMsg](vm.eventLoop, vote)
+			vm.eventLoop.DelayUntil(hotstuff.ProposeMsg{}, vote)
 			return
 		}
 	} else {
@@ -80,11 +85,8 @@ func (vm *VotingMachine) CollectVote(vote hotstuff.VoteMsg) {
 		vm.logger.Info("block too old")
 		return
 	}
-	if vm.config.SyncVerification() {
-		vm.verifyCert(cert, block)
-	} else {
-		go vm.verifyCert(cert, block)
-	}
+
+	go vm.verifyCert(cert, block)
 }
 
 func (vm *VotingMachine) verifyCert(cert hotstuff.PartialCert, block *hotstuff.Block) {
@@ -108,13 +110,6 @@ func (vm *VotingMachine) verifyCert(cert hotstuff.PartialCert, block *hotstuff.B
 		}
 	}()
 	votes := vm.verifiedVotes[cert.BlockHash()]
-	// Check for duplicate votes from the same signer
-	for _, v := range votes {
-		if v.Signer() == cert.Signer() {
-			vm.logger.Debugf("Ignoring duplicate vote from signer %d", cert.Signer())
-			return
-		}
-	}
 	votes = append(votes, cert)
 	vm.verifiedVotes[cert.BlockHash()] = votes
 	if len(votes) < vm.config.QuorumSize() {
@@ -127,5 +122,5 @@ func (vm *VotingMachine) verifyCert(cert hotstuff.PartialCert, block *hotstuff.B
 	}
 	delete(vm.verifiedVotes, cert.BlockHash())
 	vm.logger.Debugf("CollectVote: dispatching event for new view (current : %d)", vm.state.View())
-	vm.eventLoop.AddEvent(hotstuff.NewViewMsg{ID: vm.config.ID(), SyncInfo: hotstuff.NewSyncInfoWith(qc)})
+	vm.eventLoop.AddEvent(hotstuff.NewViewMsg{ID: vm.config.ID(), SyncInfo: hotstuff.NewSyncInfo().WithQC(qc)})
 }

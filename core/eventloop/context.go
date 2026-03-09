@@ -13,14 +13,14 @@ import (
 func (el *EventLoop) ViewContext(view *hotstuff.View) (context.Context, context.CancelFunc) {
 	ctx, cancel := context.WithCancel(el.Context())
 
-	unregister := Register(el, func(event hotstuff.ViewChangeEvent) {
-		if view == nil || event.View >= *view {
+	id := el.RegisterHandler(hotstuff.ViewChangeEvent{}, func(event any) {
+		if view == nil || event.(hotstuff.ViewChangeEvent).View >= *view {
 			cancel()
 		}
 	}, Prioritize(), UnsafeRunInAddEvent())
 
 	return ctx, func() {
-		unregister()
+		el.UnregisterHandler(hotstuff.ViewChangeEvent{}, id)
 		cancel()
 	}
 }
@@ -30,12 +30,12 @@ func (el *EventLoop) TimeoutContext() (context.Context, context.CancelFunc) {
 	// ViewContext handles view-change case.
 	ctx, cancel := el.ViewContext(nil)
 
-	unregister := Register(el, func(_ hotstuff.TimeoutEvent) {
+	id := el.RegisterHandler(hotstuff.TimeoutEvent{}, func(_ any) {
 		cancel()
 	}, Prioritize(), UnsafeRunInAddEvent())
 
 	return ctx, func() {
-		unregister()
+		el.UnregisterHandler(hotstuff.TimeoutEvent{}, id)
 		cancel()
 	}
 }

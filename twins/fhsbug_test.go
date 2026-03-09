@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/relab/hotstuff/core"
 	"github.com/relab/hotstuff/core/logging"
 	"github.com/relab/hotstuff/twins"
 )
@@ -23,57 +22,57 @@ const fhsBugScenario = `
 		[
 			{
 				"leader": 1,
-				"partitions": [ [{"ReplicaID": 1}, {"ReplicaID": 2}, {"ReplicaID": 3}, {"ReplicaID": 4}], [] ],
+				"partitions": [ [1, 2, 3, 4], [] ],
 				"comment": "view 1"
 			},
 			{
 				"leader": 1,
-				"partitions": [ [{"ReplicaID": 1}, {"ReplicaID": 2}, {"ReplicaID": 3}, {"ReplicaID": 4}], [] ],
+				"partitions": [ [1, 2, 3, 4], [] ],
 				"comment": "view 2"
 			},
 			{
 				"leader": 1,
-				"partitions": [ [{"ReplicaID": 1}, {"ReplicaID": 2}, {"ReplicaID": 3}, {"ReplicaID": 4}], [] ],
+				"partitions": [ [1, 2, 3, 4], [] ],
 				"comment": "view 3"
 			},
 			{
 				"leader": 1,
-				"partitions": [ [{"ReplicaID": 1}, {"ReplicaID": 2}, {"ReplicaID": 3}, {"ReplicaID": 4}], [] ],
+				"partitions": [ [1, 2, 3, 4], [] ],
 				"comment": "view 4. replicas time out in this view"
 			},
 			{
 				"leader": 2,
-				"partitions": [ [{"ReplicaID": 1}, {"ReplicaID": 3}, {"ReplicaID": 4}], [{"ReplicaID": 2}] ],
+				"partitions": [ [1, 3, 4], [2] ],
 				"comment": "view 5."
 			},
 			{
 				"leader": 1,
-				"partitions": [ [{"ReplicaID": 1}, {"ReplicaID": 3}, {"ReplicaID": 4}], [{"ReplicaID": 2}] ],
+				"partitions": [ [1, 3, 4], [2] ],
 				"comment": "view 6"
 			},
 			{
 				"leader": 3,
-				"partitions": [ [{"ReplicaID": 1}, {"ReplicaID": 2}, {"ReplicaID": 4}], [{"ReplicaID": 3}] ],
+				"partitions": [ [1, 2, 4], [3] ],
 				"comment": "view 7"
 			},
 			{
 				"leader": 2,
-				"partitions": [ [{"ReplicaID": 1}, {"ReplicaID": 2}, {"ReplicaID": 4}], [{"ReplicaID": 3}] ],
+				"partitions": [ [1, 2, 4], [3] ],
 				"comment": "view 8"
 			},
 			{
 				"leader": 2,
-				"partitions": [ [{"ReplicaID": 1}, {"ReplicaID": 3}, {"ReplicaID": 4}], [{"ReplicaID": 2}] ],
+				"partitions": [ [1, 3, 4], [2] ],
 				"comment": "view 9"
 			},
 			{
 				"leader": 3,
-				"partitions": [ [{"ReplicaID": 1}, {"ReplicaID": 3}, {"ReplicaID": 4}], [{"ReplicaID": 2}] ],
+				"partitions": [ [1, 3, 4], [2] ],
 				"comment": "view 10"
 			},
 			{
 				"leader": 3,
-				"partitions": [ [{"ReplicaID": 1}, {"ReplicaID": 3}, {"ReplicaID": 4}], [{"ReplicaID": 2}] ],
+				"partitions": [ [1, 3, 4], [2] ],
 				"comment": "view 11"
 			}
 		]
@@ -102,7 +101,7 @@ func TestFHSBug(t *testing.T) {
 
 	settings := src.Settings()
 
-	res, err := twins.ExecuteScenario(scenario, settings.NumNodes, settings.NumTwins, 100, vulnerableModule, core.WithAggregateQC())
+	res, err := twins.ExecuteScenario(scenario, settings.NumNodes, settings.NumTwins, 100, vulnerableModule)
 	if err != nil {
 		t.Fatalf("failed to execute scenario: %v", err)
 	}

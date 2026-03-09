@@ -2,6 +2,7 @@ package consensus_test
 
 import (
 	"bytes"
+	"github.com/relab/hotstuff/protocol/propagator"
 	"testing"
 
 	"github.com/relab/hotstuff"
@@ -36,6 +37,7 @@ func wireUpProposer(
 	viewStates, err := protocol.NewViewStates(
 		essentials.Blockchain(),
 		essentials.Authority(),
+		essentials.RuntimeCfg(),
 	)
 	check(t, err)
 	leaderRotation := leaderrotation.NewFixed(1)
@@ -47,11 +49,35 @@ func wireUpProposer(
 		essentials.Authority(),
 		viewStates,
 	)
+
+	voteCollector := propagator.NewVoteCollector(essentials.RuntimeCfg())
+	seenMachine := votingmachine.NewSeenMachine(
+		essentials.Logger(),
+		essentials.EventLoop(),
+		essentials.RuntimeCfg(),
+		essentials.Blockchain(),
+		essentials.Authority(),
+		viewStates,
+	)
+	propagator := propagator.NewPropagator(
+		essentials.RuntimeCfg(),
+		essentials.EventLoop(),
+		essentials.Logger(),
+		leaderRotation,
+		viewStates,
+		essentials.Authority(),
+		voteCollector,
+		essentials.Blockchain(),
+		essentials.MockSender(),
+		seenMachine,
+	)
+
 	comm := comm.NewClique(
 		essentials.RuntimeCfg(),
 		votingMachine,
 		leaderRotation,
 		essentials.MockSender(),
+		propagator,
 	)
 	committer := consensus.NewCommitter(
 		essentials.EventLoop(),
@@ -67,6 +93,7 @@ func wireUpProposer(
 		comm,
 		essentials.Authority(),
 		committer,
+		essentials.Blockchain(),
 	)
 	return consensus.NewProposer(
 		essentials.EventLoop(),
@@ -99,7 +126,7 @@ func TestPropose(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	proposal, err := proposer.CreateProposal(hotstuff.NewSyncInfoWith(highQC))
+	proposal, err := proposer.CreateProposal(hotstuff.NewSyncInfo().WithQC(highQC))
 	if err != nil {
 		t.Fatal(err)
 	}

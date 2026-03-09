@@ -9,7 +9,6 @@ import (
 	"github.com/relab/hotstuff/core/eventloop"
 	"github.com/relab/hotstuff/core/logging"
 	"github.com/relab/hotstuff/internal/proto/hotstuffpb"
-	"github.com/relab/hotstuff/internal/proto/kauripb"
 	"github.com/relab/hotstuff/internal/tree"
 	"github.com/relab/hotstuff/network"
 	"github.com/relab/hotstuff/protocol/comm/kauri"
@@ -40,7 +39,7 @@ type Kauri struct {
 // NewKauri creates a new Kauri instance for communicating proposals and votes.
 func NewKauri(
 	logger logging.Logger,
-	el *eventloop.EventLoop,
+	eventLoop *eventloop.EventLoop,
 	config *core.RuntimeConfig,
 	blockchain *blockchain.Blockchain,
 	auth *cert.Authority,
@@ -51,7 +50,7 @@ func NewKauri(
 	}
 	k := &Kauri{
 		logger:     logger,
-		eventLoop:  el,
+		eventLoop:  eventLoop,
 		config:     config,
 		blockchain: blockchain,
 		auth:       auth,
@@ -59,17 +58,14 @@ func NewKauri(
 		senders:    make([]hotstuff.ID, 0),
 		tree:       config.Tree(),
 	}
-	eventloop.Register(el, func(_ hotstuff.ReplicaConnectedEvent) {
+	k.eventLoop.RegisterHandler(hotstuff.ReplicaConnectedEvent{}, func(_ any) {
 		k.initDone = true // signal that we are connected
 	})
-	eventloop.Register(el, func(event *kauripb.Contribution) {
-		k.onContributionRecv(event)
+	k.eventLoop.RegisterHandler(kauri.ContributionRecvEvent{}, func(event any) {
+		k.onContributionRecv(event.(kauri.ContributionRecvEvent))
 	})
-	eventloop.Register(el, func(event WaitTimerExpiredEvent) {
-		k.onWaitTimerExpired(event)
-	})
-	eventloop.Register(el, func(event WaitForConnectedEvent) {
-		k.onWaitForConnected(event)
+	k.eventLoop.RegisterHandler(WaitTimerExpiredEvent{}, func(event any) {
+		k.onWaitTimerExpired(event.(WaitTimerExpiredEvent))
 	})
 	return k
 }
@@ -87,9 +83,10 @@ func (k *Kauri) Aggregate(proposal *hotstuff.ProposeMsg, pc hotstuff.PartialCert
 // begin starts dissemination of proposal and aggregation of votes.
 func (k *Kauri) begin(p *hotstuff.ProposeMsg, pc hotstuff.PartialCert) error {
 	if !k.initDone {
-		eventloop.DelayUntil[network.ConnectedEvent](k.eventLoop, WaitForConnectedEvent{
-			pc: pc,
-			p:  p,
+		k.eventLoop.DelayUntil(network.ConnectedEvent{}, func() {
+			if err := k.begin(p, pc); err != nil {
+				k.logger.Error(err)
+			}
 		})
 		return nil
 	}
@@ -130,24 +127,12 @@ func (k *Kauri) waitToAggregate() {
 	k.eventLoop.AddEvent(WaitTimerExpiredEvent{currentView: view})
 }
 
-// onWaitForConnected is invoked when begin is called before the replica is connected.
-func (k *Kauri) onWaitForConnected(event WaitForConnectedEvent) {
-	k.logger.Debugf("WaitForConnectedEvent: %v", event)
-	if k.currentView > hotstuff.View(event.p.Block.View()) {
-		k.logger.Debug("Current view is higher than event view, not starting kauri")
-		return
-	}
-	err := k.begin(event.p, event.pc)
-	if err != nil {
-		k.logger.Errorf("Failed to begin kauri after connection: %v", err)
-	}
-}
-
 // onContributionRecv is invoked upon receiving the vote for aggregation.
-func (k *Kauri) onContributionRecv(contribution *kauripb.Contribution) {
-	if k.currentView != hotstuff.View(contribution.View) {
+func (k *Kauri) onContributionRecv(event kauri.ContributionRecvEvent) {
+	if k.currentView != hotstuff.View(event.Contribution.View) {
 		return
 	}
+	contribution := event.Contribution
 	k.logger.Debugf("Processing the contribution from %d", contribution.ID)
 	currentSignature := hotstuffpb.QuorumSignatureFromProto(contribution.Signature)
 	err := k.mergeContribution(currentSignature)
@@ -196,7 +181,7 @@ func (k *Kauri) mergeContribution(currentSignature hotstuff.QuorumSignature) err
 	if combSignature.Participants().Len() >= k.config.QuorumSize() {
 		k.logger.Debug("Aggregated Complete QC and sending the event")
 		k.eventLoop.AddEvent(hotstuff.NewViewMsg{
-			SyncInfo: hotstuff.NewSyncInfoWith(hotstuff.NewQuorumCert(
+			SyncInfo: hotstuff.NewSyncInfo().WithQC(hotstuff.NewQuorumCert(
 				k.aggContrib,
 				k.currentView,
 				k.blockHash,
@@ -208,11 +193,6 @@ func (k *Kauri) mergeContribution(currentSignature hotstuff.QuorumSignature) err
 
 type WaitTimerExpiredEvent struct {
 	currentView hotstuff.View
-}
-
-type WaitForConnectedEvent struct {
-	pc hotstuff.PartialCert
-	p  *hotstuff.ProposeMsg
 }
 
 var _ Communication = (*Kauri)(nil)

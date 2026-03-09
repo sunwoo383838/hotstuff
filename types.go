@@ -7,6 +7,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -23,6 +25,7 @@ type IDSet interface {
 	RangeWhile(f func(ID) bool)
 	// Len returns the number of entries in the set.
 	Len() int
+	ToBytes
 }
 
 // IDSetToString formats an IDSet as a string.
@@ -134,6 +137,8 @@ type SyncInfo struct {
 	qc    *QuorumCert
 	tc    *TimeoutCert
 	aggQC *AggregateQC
+	qsc   *QuorumSeenCert
+	nvc   *NewViewCert
 }
 
 // NewSyncInfo returns a new SyncInfo struct.
@@ -141,40 +146,37 @@ func NewSyncInfo() SyncInfo {
 	return SyncInfo{}
 }
 
-// NewSyncInfoWith returns a new SyncInfo with the provided value.
-// The value can be a QuorumCert, TimeoutCert, or AggregateQC.
-// For setting multiple values, use the Set* methods on the returned SyncInfo.
-//
-// Examples:
-//
-//	si := NewSyncInfoWith(tc); si.SetQC(qc)
-//	si := NewSyncInfoWith(tc); si.SetAggQC(aggQC)
-func NewSyncInfoWith[T QuorumCert | TimeoutCert | AggregateQC](value T) SyncInfo {
-	si := SyncInfo{}
-	switch v := any(value).(type) {
-	case QuorumCert:
-		si.qc = &v
-	case TimeoutCert:
-		si.tc = &v
-	case AggregateQC:
-		si.aggQC = &v
-	}
+// WithQC returns a copy of the SyncInfo struct with the given QC.
+func (si SyncInfo) WithQC(qc QuorumCert) SyncInfo {
+	si.qc = new(QuorumCert)
+	*si.qc = qc
 	return si
 }
 
-// SetQC sets the QC.
-func (si *SyncInfo) SetQC(qc QuorumCert) {
-	si.qc = &qc
+// WithTC returns a copy of the SyncInfo struct with the given TC.
+func (si SyncInfo) WithTC(tc TimeoutCert) SyncInfo {
+	si.tc = new(TimeoutCert)
+	*si.tc = tc
+	return si
 }
 
-// SetTC sets the TC.
-func (si *SyncInfo) SetTC(tc TimeoutCert) {
-	si.tc = &tc
+// WithAggQC returns a copy of the SyncInfo struct with the given AggregateQC.
+func (si SyncInfo) WithAggQC(aggQC AggregateQC) SyncInfo {
+	si.aggQC = new(AggregateQC)
+	*si.aggQC = aggQC
+	return si
 }
 
-// SetAggQC sets the AggregateQC.
-func (si *SyncInfo) SetAggQC(aggQC AggregateQC) {
-	si.aggQC = &aggQC
+func (si SyncInfo) WithQSC(qsc QuorumSeenCert) SyncInfo {
+	si.qsc = new(QuorumSeenCert)
+	*si.qsc = qsc
+	return si
+}
+
+func (si SyncInfo) WithNVC(nvc NewViewCert) SyncInfo {
+	si.nvc = new(NewViewCert)
+	*si.nvc = nvc
+	return si
 }
 
 // QC returns the quorum certificate, if present.
@@ -201,6 +203,20 @@ func (si SyncInfo) AggQC() (_ AggregateQC, _ bool) {
 	return
 }
 
+func (si SyncInfo) QSC() (_ QuorumSeenCert, _ bool) {
+	if si.qsc != nil {
+		return *si.qsc, true
+	}
+	return
+}
+
+func (si SyncInfo) NVC() (_ NewViewCert, _ bool) {
+	if si.nvc != nil {
+		return *si.nvc, true
+	}
+	return
+}
+
 func (si SyncInfo) String() string {
 	var sb strings.Builder
 	sb.WriteString("{ ")
@@ -212,6 +228,12 @@ func (si SyncInfo) String() string {
 	}
 	if si.aggQC != nil {
 		fmt.Fprintf(&sb, "%s ", si.aggQC)
+	}
+	if si.qsc != nil {
+		fmt.Fprintf(&sb, "%s ", si.qsc)
+	}
+	if si.nvc != nil {
+		fmt.Fprintf(&sb, "%s ", si.nvc)
 	}
 	sb.WriteRune('}')
 	return sb.String()
@@ -353,6 +375,408 @@ func (aggQC AggregateQC) String() string {
 		_ = writeParticipants(&sb, aggQC.sig.Participants())
 	}
 	return fmt.Sprintf("AggQC{ view: %d, IDs: [ %s] }", aggQC.view, &sb)
+}
+
+type VoteSignatureSet struct {
+	members map[string]VoteSignature
+}
+
+func NewVoteSignatureSet() *VoteSignatureSet {
+	return &VoteSignatureSet{
+		members: make(map[string]VoteSignature),
+	}
+}
+
+func (s *VoteSignatureSet) key(vote VoteSignature) string {
+	if vote.signature == nil {
+		return ""
+	}
+	return string(vote.signature.ToBytes())
+}
+
+func (s *VoteSignatureSet) Add(vote VoteSignature) {
+	s.members[s.key(vote)] = vote
+}
+
+func (s *VoteSignatureSet) Contains(vote VoteSignature) bool {
+	_, ok := s.members[s.key(vote)]
+	return ok
+}
+
+func (s *VoteSignatureSet) Remove(vote VoteSignature) {
+	delete(s.members, s.key(vote))
+}
+
+func (s *VoteSignatureSet) ForEach(f func(VoteSignature)) {
+	for _, vote := range s.members {
+		f(vote)
+	}
+}
+
+func (s *VoteSignatureSet) AddAll(other *VoteSignatureSet) {
+	other.ForEach(func(vote VoteSignature) {
+		s.Add(vote)
+	})
+}
+
+func (s *VoteSignatureSet) Len() int {
+	return len(s.members)
+}
+
+func (s *VoteSignatureSet) ToSlice() []VoteSignature {
+	slice := make([]VoteSignature, 0, s.Len())
+	s.ForEach(func(vote VoteSignature) {
+		slice = append(slice, vote)
+	})
+	return slice
+}
+
+func (s *VoteSignatureSet) ToBytes() []byte {
+	if s.Len() == 0 {
+		return nil
+	}
+
+	slice := s.ToSlice()
+
+	sort.Slice(slice, func(i, j int) bool {
+		return slice[i].id < slice[j].id
+	})
+
+	var b bytes.Buffer
+	for _, vote := range slice {
+		b.Write(vote.ToBytes())
+	}
+
+	return b.Bytes()
+}
+
+type VoteSignature struct {
+	id        ID
+	hash      Hash
+	signature QuorumSignature
+}
+
+func (v VoteSignature) Id() ID {
+	return v.id
+}
+
+func (v VoteSignature) Hash() Hash {
+	return v.hash
+}
+
+func (v VoteSignature) Signature() QuorumSignature {
+	return v.signature
+}
+
+func (v VoteSignature) ToBytes() []byte {
+	b := v.id.ToBytes()
+	b = append(b, v.hash[:]...)
+	b = append(b, v.signature.ToBytes()...)
+	return b
+}
+
+func (v VoteSignature) String() string {
+	return fmt.Sprintf("[hash: %s, voter: %d]", v.hash.SmallString(), v.id)
+}
+
+func VoteSignatureFromPartialCert(pc PartialCert) VoteSignature {
+	return VoteSignature{
+		id:        pc.signer,
+		hash:      pc.blockHash,
+		signature: pc.signature,
+	}
+}
+
+func PartialCertFromVoteSignature(vs VoteSignature) PartialCert {
+	return PartialCert{
+		signer:    vs.id,
+		blockHash: vs.hash,
+		signature: vs.signature,
+	}
+}
+
+func NewVoteSignature(id ID, hash Hash, signature QuorumSignature) VoteSignature {
+	return VoteSignature{id: id, hash: hash, signature: signature}
+}
+
+type NewViewCert struct {
+	qscs     map[ID]QuorumSeenCert
+	sig      QuorumSignature
+	voteSig  QuorumSignature
+	anchor   Hash
+	view     View
+	voteSigs map[VoteSignature]IDSet
+}
+
+func NewNewViewCert(qscs map[ID]QuorumSeenCert, sig QuorumSignature,
+	voteSig QuorumSignature, anchor Hash, view View, voteSigs map[VoteSignature]IDSet) NewViewCert {
+	return NewViewCert{qscs: qscs, sig: sig, voteSig: voteSig,
+		anchor: anchor, view: view, voteSigs: voteSigs}
+}
+
+func (nvc NewViewCert) View() View {
+	return nvc.view
+}
+
+func (nvc NewViewCert) Anchor() Hash {
+	return nvc.anchor
+}
+
+func (nvc NewViewCert) VoteSig() QuorumSignature {
+	return nvc.voteSig
+}
+
+func (nvc NewViewCert) Sig() QuorumSignature {
+	return nvc.sig
+}
+
+func (nvc NewViewCert) QSCs() map[ID]QuorumSeenCert {
+	return nvc.qscs
+}
+
+func (nvc NewViewCert) VoteSigs() map[VoteSignature]IDSet {
+	return nvc.voteSigs
+}
+
+func (nvc NewViewCert) String() string {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("NVC{ anchor: %s, view: %d",
+		nvc.anchor.SmallString(), nvc.view))
+	if len(nvc.qscs) > 0 {
+		var sortedIDs []ID
+		for id := range nvc.qscs {
+			sortedIDs = append(sortedIDs, id)
+		}
+		sort.Slice(sortedIDs, func(i, j int) bool {
+			return sortedIDs[i] < sortedIDs[j]
+		})
+		sb.WriteString(fmt.Sprintf(", qscs: ["))
+		for i, id := range sortedIDs {
+			if i > 0 {
+				sb.WriteString(", ")
+			}
+			sb.WriteString(fmt.Sprintf("%d", id))
+		}
+		sb.WriteString("]")
+	}
+	if len(nvc.voteSigs) > 0 {
+		var sortedVoteSigs []VoteSignature
+		for voteSig := range nvc.voteSigs {
+			sortedVoteSigs = append(sortedVoteSigs, voteSig)
+		}
+		sort.Slice(sortedVoteSigs, func(i, j int) bool {
+			return sortedVoteSigs[i].String() < sortedVoteSigs[j].String()
+		})
+
+		sb.WriteString(", voteSigs: { ")
+		firstEntry := true
+		for _, voteSig := range sortedVoteSigs {
+			idSet := nvc.voteSigs[voteSig]
+			if !firstEntry {
+				sb.WriteString("; ")
+			}
+			sb.WriteString(voteSig.String())
+			sb.WriteString(": [")
+			_ = writeParticipants(&sb, idSet)
+			sb.WriteString("]")
+			firstEntry = false
+		}
+		sb.WriteString(" }")
+	}
+
+	sb.WriteString(" }")
+	return sb.String()
+}
+
+type QuorumSeenCert struct {
+	signature QuorumSignature
+	metadata  map[ID]IDSet
+	view      View
+	hash      Hash
+}
+
+func NewQuorumSeenCert(signature QuorumSignature, metadata map[ID]IDSet, view View,
+	hash Hash) QuorumSeenCert {
+	return QuorumSeenCert{
+		signature: signature,
+		metadata:  metadata,
+		view:      view,
+		hash:      hash,
+	}
+}
+
+func (qsc QuorumSeenCert) Signature() QuorumSignature {
+	return qsc.signature
+}
+
+func (qsc QuorumSeenCert) Metadata() map[ID]IDSet {
+	return qsc.metadata
+}
+
+func (qsc QuorumSeenCert) View() View {
+	return qsc.view
+}
+
+func (qsc QuorumSeenCert) BlockHash() Hash {
+	return qsc.hash
+}
+
+func (qsc QuorumSeenCert) String() string {
+	var sb strings.Builder
+
+	var sortedKeys []ID
+	for id := range qsc.metadata {
+		sortedKeys = append(sortedKeys, id)
+	}
+	sort.Slice(sortedKeys, func(i, j int) bool {
+		return sortedKeys[i] < sortedKeys[j]
+	})
+
+	firstEntry := true
+	for _, id := range sortedKeys {
+		idSet := qsc.metadata[id]
+		if !firstEntry {
+			sb.WriteString("; ")
+		}
+		sb.WriteString(fmt.Sprintf("%d: [", id))
+		_ = writeParticipants(&sb, idSet)
+		sb.WriteString("]")
+		firstEntry = false
+	}
+
+	return fmt.Sprintf("QSC{ hash: %s, view: %d, metadata: { %s } }", qsc.hash.SmallString(), qsc.view, &sb)
+}
+
+func (qsc QuorumSeenCert) ToBytes() []byte {
+	buf := qsc.hash[:]
+	var viewBuf [8]byte
+	binary.LittleEndian.PutUint64(viewBuf[:], uint64(qsc.view))
+	buf = append(buf, viewBuf[:]...)
+	if qsc.Signature() != nil {
+		buf = append(buf, qsc.signature.ToBytes()...)
+	}
+	keys := make([]ID, 0, len(qsc.metadata))
+	for k := range qsc.metadata {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		return keys[i] < keys[j]
+	})
+
+	for _, key := range keys {
+		var keyBuf [4]byte
+		binary.LittleEndian.PutUint32(keyBuf[:], uint32(key))
+		buf = append(buf, keyBuf[:]...)
+		value := qsc.metadata[key]
+		buf = append(buf, value.ToBytes()...)
+	}
+
+	return buf
+}
+
+func (qsc QuorumSeenCert) Equals(other QuorumSeenCert) bool {
+	if qsc.view != other.view {
+		return false
+	}
+	if qsc.hash != other.hash {
+		return false
+	}
+	if !reflect.DeepEqual(qsc.metadata, other.metadata) {
+		return false
+	}
+	if qsc.signature == nil || other.signature == nil {
+		return qsc.signature == other.signature
+	}
+	return bytes.Equal(qsc.signature.ToBytes(), other.signature.ToBytes())
+}
+
+type SeenCert struct {
+	signature QuorumSignature
+	voter     ID
+	blockHash Hash
+}
+
+func NewSeenCert(signature QuorumSignature, blockHash Hash, voter ID) SeenCert {
+	return SeenCert{
+		signature: signature,
+		voter:     voter,
+		blockHash: blockHash,
+	}
+}
+
+func (sc SeenCert) Signature() QuorumSignature {
+	return sc.signature
+}
+
+func (sc SeenCert) Voter() ID {
+	return sc.voter
+}
+
+func (sc SeenCert) BlockHash() Hash {
+	return sc.blockHash
+}
+
+func (sc SeenCert) ToBytes() []byte {
+	b := sc.signature.ToBytes()
+	b = append(b, sc.blockHash[:]...)
+	b = append(b, sc.voter.ToBytes()...)
+	return b
+}
+
+type SeenPartialCert struct {
+	signer    ID
+	signature QuorumSignature
+	voter     ID
+	blockHash Hash
+	verified  bool
+}
+
+func (spc *SeenPartialCert) IsVerified() bool {
+	return spc.verified
+}
+
+func (spc *SeenPartialCert) SetVerified(verified bool) {
+	spc.verified = verified
+}
+
+func NewSeenPartialCert(signature QuorumSignature,
+	blockHash Hash, voter ID) SeenPartialCert {
+	var signer ID
+	signature.Participants().RangeWhile(func(i ID) bool {
+		signer = i
+		return false
+	})
+	return SeenPartialCert{signer, signature,
+		voter, blockHash, false}
+}
+
+func (spc *SeenPartialCert) Signer() ID {
+	return spc.signer
+}
+
+func (spc *SeenPartialCert) Signature() QuorumSignature {
+	return spc.signature
+}
+
+func (spc *SeenPartialCert) Voter() ID {
+	return spc.voter
+}
+
+func (spc *SeenPartialCert) BlockHash() Hash {
+	return spc.blockHash
+}
+
+func (spc *SeenPartialCert) ToBytes() []byte {
+	b := append(spc.blockHash[:], spc.voter.ToBytes()...)
+	return b
+}
+
+type Cert interface {
+	ToBytes
+	Signature() QuorumSignature
+	BlockHash() Hash
+	View() View
+	String() string
 }
 
 var _ fmt.Stringer = (*AggregateQC)(nil)

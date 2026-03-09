@@ -16,13 +16,13 @@ type Block struct {
 	parent   Hash
 	proposer ID
 	batch    *clientpb.Batch
-	cert     QuorumCert
+	cert     Cert
 	view     View
 	ts       time.Time
 }
 
 // NewBlock creates a new Block
-func NewBlock(parent Hash, cert QuorumCert, batch *clientpb.Batch, view View, proposer ID) *Block {
+func NewBlock(parent Hash, cert Cert, batch *clientpb.Batch, view View, proposer ID) *Block {
 	b := &Block{
 		parent:   parent,
 		cert:     cert,
@@ -74,8 +74,19 @@ func (b *Block) Commands() *clientpb.Batch { // TODO(meling): return a slice of 
 }
 
 // QuorumCert returns the quorum certificate in the block
-func (b *Block) QuorumCert() QuorumCert {
+func (b *Block) Cert() Cert {
 	return b.cert
+}
+
+// QuorumCert returns the quorum certificate in the block
+func (b *Block) QuorumCert() QuorumCert {
+	qc := b.cert.(QuorumCert)
+	return qc
+}
+
+func (b *Block) QuorumSeenCert() QuorumSeenCert {
+	qc := b.cert.(QuorumSeenCert)
+	return qc
 }
 
 // View returns the view in which the Block was proposed

@@ -47,7 +47,7 @@ func (cm *Committer) TryCommit(block *hotstuff.Block) error {
 	// check commit rule and get the next block to commit. If it was nil, do nothing.
 	if blockToCommit := cm.ruler.CommitRule(block); blockToCommit != nil {
 		// recursively commit the block's ancestors before committing the block itself
-		if err := cm.commit(blockToCommit); err != nil {
+		if err := cm.Commit(blockToCommit); err != nil {
 			return fmt.Errorf("failed to commit: %w", err)
 		}
 	}
@@ -55,7 +55,7 @@ func (cm *Committer) TryCommit(block *hotstuff.Block) error {
 }
 
 // Stores the block before further execution.
-func (cm *Committer) commit(block *hotstuff.Block) error {
+func (cm *Committer) Commit(block *hotstuff.Block) error {
 	err := cm.commitInner(block, cm.viewStates.CommittedBlock())
 	if err != nil {
 		return err

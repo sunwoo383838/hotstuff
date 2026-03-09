@@ -2,6 +2,7 @@ package comm_test
 
 import (
 	"bytes"
+	"github.com/relab/hotstuff/protocol/propagator"
 	"testing"
 
 	"github.com/relab/hotstuff"
@@ -26,6 +27,7 @@ func TestDisseminateAggregate(t *testing.T) {
 	viewStates, err := protocol.NewViewStates(
 		essentials.Blockchain(),
 		essentials.Authority(),
+		essentials.RuntimeCfg(),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -38,11 +40,35 @@ func TestDisseminateAggregate(t *testing.T) {
 		essentials.Authority(),
 		viewStates,
 	)
+
+	voteCollector := propagator.NewVoteCollector(essentials.RuntimeCfg())
+	seenMachine := votingmachine.NewSeenMachine(
+		essentials.Logger(),
+		essentials.EventLoop(),
+		essentials.RuntimeCfg(),
+		essentials.Blockchain(),
+		essentials.Authority(),
+		viewStates,
+	)
+	propagator := propagator.NewPropagator(
+		essentials.RuntimeCfg(),
+		essentials.EventLoop(),
+		essentials.Logger(),
+		&leaderRotation{},
+		viewStates,
+		essentials.Authority(),
+		voteCollector,
+		essentials.Blockchain(),
+		essentials.MockSender(),
+		seenMachine,
+	)
+
 	clique := comm.NewClique(
 		essentials.RuntimeCfg(),
 		votingMachine,
 		&leaderRotation{},
 		essentials.MockSender(),
+		propagator,
 	)
 	block := testutil.CreateBlock(t, essentials.Authority())
 	pc := testutil.CreatePC(t, block, essentials.Authority())
@@ -81,6 +107,7 @@ func TestAggregateSend(t *testing.T) {
 	viewStates, err := protocol.NewViewStates(
 		essentials.Blockchain(),
 		essentials.Authority(),
+		essentials.RuntimeCfg(),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -93,11 +120,35 @@ func TestAggregateSend(t *testing.T) {
 		essentials.Authority(),
 		viewStates,
 	)
+
+	voteCollector := propagator.NewVoteCollector(essentials.RuntimeCfg())
+	seenMachine := votingmachine.NewSeenMachine(
+		essentials.Logger(),
+		essentials.EventLoop(),
+		essentials.RuntimeCfg(),
+		essentials.Blockchain(),
+		essentials.Authority(),
+		viewStates,
+	)
+	propagator := propagator.NewPropagator(
+		essentials.RuntimeCfg(),
+		essentials.EventLoop(),
+		essentials.Logger(),
+		&leaderRotation{},
+		viewStates,
+		essentials.Authority(),
+		voteCollector,
+		essentials.Blockchain(),
+		essentials.MockSender(),
+		seenMachine,
+	)
+
 	clique := comm.NewClique(
 		essentials.RuntimeCfg(),
 		votingMachine,
 		&leaderRotation{},
 		essentials.MockSender(),
+		propagator,
 	)
 	block := testutil.CreateBlock(t, essentials.Authority())
 	pc := testutil.CreatePC(t, block, essentials.Authority())
@@ -130,6 +181,7 @@ func TestAggregateStore(t *testing.T) {
 	viewStates, err := protocol.NewViewStates(
 		essentials.Blockchain(),
 		essentials.Authority(),
+		essentials.RuntimeCfg(),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -142,11 +194,35 @@ func TestAggregateStore(t *testing.T) {
 		essentials.Authority(),
 		viewStates,
 	)
+
+	voteCollector := propagator.NewVoteCollector(essentials.RuntimeCfg())
+	seenMachine := votingmachine.NewSeenMachine(
+		essentials.Logger(),
+		essentials.EventLoop(),
+		essentials.RuntimeCfg(),
+		essentials.Blockchain(),
+		essentials.Authority(),
+		viewStates,
+	)
+	propagator := propagator.NewPropagator(
+		essentials.RuntimeCfg(),
+		essentials.EventLoop(),
+		essentials.Logger(),
+		&leaderRotation{},
+		viewStates,
+		essentials.Authority(),
+		voteCollector,
+		essentials.Blockchain(),
+		essentials.MockSender(),
+		seenMachine,
+	)
+
 	clique := comm.NewClique(
 		essentials.RuntimeCfg(),
 		votingMachine,
 		&leaderRotation{},
 		essentials.MockSender(),
+		propagator,
 	)
 	block := testutil.CreateBlock(t, essentials.Authority())
 	pc := testutil.CreatePC(t, block, essentials.Authority())

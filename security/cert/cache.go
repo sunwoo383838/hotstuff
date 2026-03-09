@@ -118,4 +118,8 @@ func (cache *Cache) Combine(signatures ...hotstuff.QuorumSignature) (hotstuff.Qu
 	return cache.impl.Combine(signatures...)
 }
 
+func (cache *Cache) Unwrap() crypto.Base {
+	return cache.impl
+}
+
 var _ crypto.Base = (*Cache)(nil)

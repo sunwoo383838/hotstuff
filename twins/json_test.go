@@ -16,7 +16,7 @@ const jsonWant = `{
 	"shuffle": false,
 	"seed": 0,
 	"scenarios": [
-		[{"leader":1,"partitions":[[{"ReplicaID":1,"TwinID":0},{"ReplicaID":2,"TwinID":0},{"ReplicaID":3,"TwinID":0}],[{"ReplicaID":4,"TwinID":0},{"ReplicaID":5,"TwinID":0}]]}]
+		[{"leader":1,"partitions":[[1,2,3],[4,5]]}]
 	]
 }`
 
@@ -34,8 +34,8 @@ var scenarioWant = twins.Scenario{
 	twins.View{
 		Leader: 1,
 		Partitions: []twins.NodeSet{
-			{twins.NodeID{1, 0}: {}, twins.NodeID{2, 0}: {}, twins.NodeID{3, 0}: {}},
-			{twins.NodeID{4, 0}: {}, twins.NodeID{5, 0}: {}},
+			{1: {}, 2: {}, 3: {}},
+			{4: {}, 5: {}},
 		},
 	},
 }

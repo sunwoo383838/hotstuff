@@ -1,8 +1,8 @@
 package twins
 
 import (
-	"crypto/ecdsa"
 	"fmt"
+	"github.com/relab/hotstuff/protocol/propagator"
 	"strings"
 	"time"
 
@@ -15,10 +15,13 @@ import (
 	"github.com/relab/hotstuff/protocol/comm"
 	"github.com/relab/hotstuff/protocol/consensus"
 	"github.com/relab/hotstuff/protocol/leaderrotation"
+	"github.com/relab/hotstuff/protocol/rules"
 	"github.com/relab/hotstuff/protocol/synchronizer"
 	"github.com/relab/hotstuff/protocol/votingmachine"
 	"github.com/relab/hotstuff/security/blockchain"
+	"github.com/relab/hotstuff/security/cert"
 	"github.com/relab/hotstuff/security/crypto"
+	"github.com/relab/hotstuff/security/crypto/keygen"
 	"github.com/relab/hotstuff/wiring"
 )
 
@@ -42,17 +45,20 @@ type node struct {
 	log            strings.Builder
 }
 
-func newNode(n *Network, nodeID NodeID, consensusName string, pk *ecdsa.PrivateKey, opts ...core.RuntimeOption) (*node, error) {
+func newNode(n *Network, nodeID NodeID, consensusName string) (*node, error) {
 	cryptoName := crypto.NameECDSA
-	allOpts := append([]core.RuntimeOption{core.WithSyncVerification(), core.WithCache(100)}, opts...)
+	pk, err := keygen.GenerateECDSAPrivateKey()
+	if err != nil {
+		return nil, err
+	}
 	node := &node{
 		id:           nodeID,
-		config:       core.NewRuntimeConfig(nodeID.ReplicaID, pk, allOpts...),
+		config:       core.NewRuntimeConfig(nodeID.ReplicaID, pk, core.WithSyncVerification()),
 		commandCache: clientpb.NewCommandCache(1),
 	}
-	node.logger = logging.NewWithDest(&n.log, fmt.Sprintf("r%dn%d", nodeID.ReplicaID, nodeID.TwinID))
+	node.logger = logging.NewWithDest(&n.log, fmt.Sprintf("r%dn%d", nodeID.ReplicaID, nodeID.NetworkID))
 	node.eventLoop = eventloop.New(node.logger, 100)
-	node.sender = newSender(n, node)
+	node.sender = newSender(n, node, node.config)
 	base, err := crypto.New(
 		node.config,
 		cryptoName,
@@ -66,18 +72,27 @@ func newNode(n *Network, nodeID NodeID, consensusName string, pk *ecdsa.PrivateK
 		node.config,
 		node.sender,
 		base,
+		cert.WithCache(100),
 	)
 	node.blockchain = depsSecurity.Blockchain()
-	consensusRules, err := newTwinsConsensusRules(
-		node.logger,
-		node.config,
-		node.blockchain,
-		consensusName,
-	)
-	if err != nil {
-		return nil, err
+	var consensusRules consensus.Ruleset
+	if consensusName == nameVulnerableFHS {
+		consensusRules = NewVulnFHS(
+			node.logger,
+			node.blockchain,
+			rules.NewFastHotStuff(
+				node.logger,
+				node.config,
+				node.blockchain,
+			),
+		)
+	} else {
+		consensusRules, err = rules.New(node.logger, node.config, node.blockchain, consensusName)
+		if err != nil {
+			return nil, err
+		}
 	}
-	node.viewStates, err = protocol.NewViewStates(node.blockchain, depsSecurity.Authority())
+	node.viewStates, err = protocol.NewViewStates(node.blockchain, depsSecurity.Authority(), node.config)
 	if err != nil {
 		return nil, err
 	}
@@ -91,11 +106,33 @@ func newNode(n *Network, nodeID NodeID, consensusName string, pk *ecdsa.PrivateK
 		depsSecurity.Authority(),
 		node.viewStates,
 	)
+	voteCollector := propagator.NewVoteCollector(node.config)
+	seenMachine := votingmachine.NewSeenMachine(
+		node.logger,
+		node.eventLoop,
+		node.config,
+		depsSecurity.Blockchain(),
+		depsSecurity.Authority(),
+		node.viewStates,
+	)
+	propagator := propagator.NewPropagator(
+		node.config,
+		node.eventLoop,
+		node.logger,
+		node.leaderRotation,
+		node.viewStates,
+		depsSecurity.Authority(),
+		voteCollector,
+		depsSecurity.Blockchain(),
+		node.sender,
+		seenMachine,
+	)
 	comm := comm.NewClique(
 		node.config,
 		votingMachine,
 		node.leaderRotation,
 		node.sender,
+		propagator,
 	)
 	node.voter = consensus.NewVoter(
 		node.config,
@@ -104,6 +141,7 @@ func newNode(n *Network, nodeID NodeID, consensusName string, pk *ecdsa.PrivateK
 		comm,
 		depsSecurity.Authority(),
 		committer,
+		depsSecurity.Blockchain(),
 	)
 	node.proposer = consensus.NewProposer(
 		node.eventLoop,
@@ -116,6 +154,14 @@ func newNode(n *Network, nodeID NodeID, consensusName string, pk *ecdsa.PrivateK
 		node.commandCache,
 		committer,
 	)
+	var timeoutRules synchronizer.TimeoutRuler
+	if consensusName == rules.NameFastHotStuff || consensusName == nameVulnerableFHS {
+		// Use aggregated quorum certificates.
+		// This must be true for Fast-HotStuff: https://arxiv.org/abs/2010.11454
+		timeoutRules = synchronizer.NewAggregate(node.config, depsSecurity.Authority())
+	} else {
+		timeoutRules = synchronizer.NewSimple(node.config, depsSecurity.Authority())
+	}
 	node.synchronizer = synchronizer.New(
 		node.eventLoop,
 		node.logger,
@@ -123,15 +169,17 @@ func newNode(n *Network, nodeID NodeID, consensusName string, pk *ecdsa.PrivateK
 		depsSecurity.Authority(),
 		node.leaderRotation,
 		synchronizer.NewFixedDuration(500*time.Millisecond),
-		synchronizer.NewTimeoutRuler(node.config, depsSecurity.Authority()),
+		timeoutRules,
 		node.proposer,
 		node.voter,
 		node.viewStates,
+		voteCollector,
 		node.sender,
 	)
 	node.timeoutManager = newTimeoutManager(n, node, node.eventLoop, node.viewStates)
 	// necessary to count executed commands.
-	eventloop.Register(node.eventLoop, func(commit hotstuff.CommitEvent) {
+	node.eventLoop.RegisterHandler(hotstuff.CommitEvent{}, func(event any) {
+		commit := event.(hotstuff.CommitEvent)
 		node.executedBlocks = append(node.executedBlocks, commit.Block)
 	})
 	commandGenerator := &commandGenerator{}
@@ -140,13 +188,4 @@ func newNode(n *Network, nodeID NodeID, consensusName string, pk *ecdsa.PrivateK
 		node.commandCache.Add(cmd)
 	}
 	return node, nil
-}
-
-// EffectiveView returns the effective view of the node, which is equal or larger to the nodes view.
-// The effective view reflects that a replica may have timed out but was not able to collect a timeout certificate.
-func (n *node) EffectiveView() hotstuff.View {
-	if n.effectiveView > n.viewStates.View() {
-		return n.effectiveView
-	}
-	return n.viewStates.View()
 }

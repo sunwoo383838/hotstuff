@@ -35,3 +35,12 @@ func (r *replicaNode) newView(msg hotstuff.SyncInfo) {
 	defer cancel()
 	r.node.NewView(ctx, hotstuffpb.SyncInfoToProto(msg))
 }
+
+func (r *replicaNode) sendSeen(cert hotstuff.SeenPartialCert) {
+	if r.node == nil {
+		return
+	}
+	ctx, cancel := r.eventLoop.TimeoutContext()
+	defer cancel()
+	r.node.SendSeen(ctx, hotstuffpb.SeenPartialCertToProto(cert))
+}

@@ -10,18 +10,11 @@ import (
 	"github.com/relab/hotstuff/security/blockchain"
 )
 
-// ContributionMsg represents a contribution sent to parent in Kauri protocol.
-type ContributionMsg struct {
-	View hotstuff.View
-	QC   hotstuff.QuorumSignature
-}
-
 type MockSender struct {
-	id            hotstuff.ID
-	recipients    []hotstuff.ID
-	messagesSent  []any
-	contributions []ContributionMsg
-	blockChains   []*blockchain.Blockchain
+	id           hotstuff.ID
+	recipients   []hotstuff.ID
+	messagesSent []any
+	blockChains  []*blockchain.Blockchain
 }
 
 // NewMockSender returns a mock implementation of core.Sender that
@@ -62,6 +55,11 @@ func (m *MockSender) saveUnicast(recipient hotstuff.ID, msg any) {
 // NOTE: it just wraps saveUnicast for now.
 func (m *MockSender) saveBroadcast(msg any) {
 	m.saveUnicast(m.id, msg)
+}
+
+func (m *MockSender) SendSeen(id hotstuff.ID, cert hotstuff.SeenPartialCert) error {
+	m.saveUnicast(id, cert)
+	return nil
 }
 
 // NewView mock that stores msg.
@@ -118,18 +116,7 @@ func (m *MockSender) Sub(ids []hotstuff.ID) (core.Sender, error) {
 	}, nil
 }
 
-// SendContributionToParent stores a contribution message for Kauri protocol testing.
-func (m *MockSender) SendContributionToParent(view hotstuff.View, qc hotstuff.QuorumSignature) {
-	m.contributions = append(m.contributions, ContributionMsg{View: view, QC: qc})
-}
-
-// ContributionsSent returns a slice of contributions sent by the mock sender.
-func (m *MockSender) ContributionsSent() []ContributionMsg {
-	return m.contributions
-}
-
 var _ core.Sender = (*MockSender)(nil)
-var _ core.KauriSender = (*MockSender)(nil)
 
 func isSubset(a, b []hotstuff.ID) bool {
 	set := make(map[hotstuff.ID]struct{}, len(a))

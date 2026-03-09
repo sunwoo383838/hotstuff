@@ -1,13 +1,12 @@
-// Package server_test contains integration tests for the HotStuff server implementation.
-// Tests verify network communication, proposal handling, and timeout mechanisms across
-// multiple replicas with both TLS and non-TLS configurations.
 package server_test
 
 import (
 	"crypto/ecdsa"
 	"crypto/tls"
 	"crypto/x509"
+	"github.com/relab/hotstuff/protocol/propagator"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -32,13 +31,6 @@ import (
 	"google.golang.org/grpc/credentials"
 )
 
-const (
-	// defaultReplicaCount is the standard number of replicas used in tests.
-	defaultReplicaCount = 4
-	// testTimeout is the maximum time to wait for expected events before failing a test.
-	testTimeout = 5 * time.Second
-)
-
 type replicaDeps struct {
 	wiring.Core
 	wiring.Security
@@ -49,7 +41,8 @@ type replicaDeps struct {
 
 func TestConnect(t *testing.T) {
 	run := func(t *testing.T, setup setupFunc) {
-		td := setup(t, defaultReplicaCount)
+		const n = 4
+		td := setup(t, n)
 		deps := createServers(t, td)
 		first := deps[0]
 		err := first.Sender.Connect(td.replicas)
@@ -62,11 +55,10 @@ func TestConnect(t *testing.T) {
 
 type sendFunc func(*cert.Authority, *network.GorumsSender)
 
-// testBase is a test helper that collects events for verification. The handle function is called
-// for each received event and signals receipt on the events channel which is used to ensure that
-// the expected number of events are received.
-func testBase[T any](t *testing.T, n int, expectedEventsPerReplica int, send sendFunc, handle func(T)) {
+// testBase is a generic test for a unicast/multicast call
+func testBase(t *testing.T, typ any, send sendFunc, handle eventloop.EventHandler) {
 	run := func(t *testing.T, setup setupFunc) {
+		const n = 4
 		td := setup(t, n)
 		deps := createServers(t, td)
 		for _, dep := range deps {
@@ -77,92 +69,76 @@ func testBase[T any](t *testing.T, n int, expectedEventsPerReplica int, send sen
 			t.Cleanup(dep.Sender.Close)
 		}
 
-		// Calculate total expected events across all receiving replicas (sender is excluded)
-		expectedEvents := expectedEventsPerReplica * (n - 1)
-		// Create event channel for this test run
-		eventsCh := make(chan struct{}, expectedEvents)
-
-		// Start all replicas with event handling and event handled notification
 		ctx := t.Context()
 		for _, d := range deps {
-			eventloop.Register(d.EventLoop(), func(event T) {
-				handle(event)
-				eventsCh <- struct{}{} // event handled
-			})
+			d.EventLoop().RegisterHandler(typ, handle)
 			d.Synchronizer.Start(ctx)
 			go d.EventLoop().Run(ctx)
 		}
 		send(deps[0].Authority(), deps[0].Sender)
-
-		for i := range expectedEvents {
-			select {
-			case <-eventsCh:
-			case <-time.After(testTimeout):
-				t.Fatalf("timeout waiting for events: received %d/%d", i, expectedEvents)
-			}
-		}
 	}
 	runBoth(t, run)
 }
 
 func TestPropose(t *testing.T) {
-	// We expect to receive 1 ProposeMsg event per replica (4 replicas - 1 sender = 3 receivers)
-	const expectedEventsPerReplica = 1
-
+	var wg sync.WaitGroup
 	var want hotstuff.ProposeMsg
-	testBase(t, defaultReplicaCount, expectedEventsPerReplica,
-		func(auth *cert.Authority, sender *network.GorumsSender) {
-			// write the wanted test data to the variable in outer scope
-			want = hotstuff.ProposeMsg{
-				ID:    1,
-				Block: testutil.CreateBlock(t, auth),
-			}
-			sender.Propose(&want)
-		}, func(got hotstuff.ProposeMsg) {
-			// This should be invoked 3 times (1 per replica, 3 receiving replicas)
-			if got.ID != want.ID {
-				t.Errorf("wrong id in proposal: got: %d, want: %d", got.ID, want.ID)
-			}
-			if got.Block.Hash() != want.Block.Hash() {
-				t.Error("block hashes do not match")
-			}
-		})
+	testBase(t, want, func(auth *cert.Authority, sender *network.GorumsSender) {
+		// write the wanted test data to the variable in outer scope
+		want = hotstuff.ProposeMsg{
+			ID:    1,
+			Block: testutil.CreateBlock(t, auth),
+		}
+		wg.Add(3)
+		sender.Propose(&want)
+		wg.Wait()
+	}, func(event any) {
+		// We should receive the proposal at all replicas except the sender (3 replicas)
+		got := event.(hotstuff.ProposeMsg)
+		if got.ID != want.ID {
+			t.Errorf("wrong id in proposal: got: %d, want: %d", got.ID, want.ID)
+		}
+		if got.Block.Hash() != want.Block.Hash() {
+			t.Error("block hashes do not match")
+		}
+		wg.Done()
+	})
 }
 
 func TestTimeout(t *testing.T) {
-	// We expect to receive 2 TimeoutMsg events per replica (4 replicas - 1 sender = 3 receivers):
-	// 1. The timeout sent explicitly by the sender
-	// 2. An additional timeout triggered by the synchronizer's timer
-	const expectedEventsPerReplica = 2
-
+	var wg sync.WaitGroup
 	view := hotstuff.View(1)
 	want := hotstuff.TimeoutMsg{
 		ID:       1,
 		View:     view,
 		SyncInfo: hotstuff.NewSyncInfo(),
 	}
-	testBase(t, defaultReplicaCount, expectedEventsPerReplica,
-		func(auth *cert.Authority, sender *network.GorumsSender) {
-			sig, err := auth.Sign(view.ToBytes())
-			if err != nil {
-				t.Fatal(err)
-			}
-			want.ViewSignature = sig
-			// We send only a single timeout message, but the synchronizer triggers
-			// an additional timeout, resulting from the following call chain:
-			// Start() -> startTimeoutTimer() -> TimeoutEvent -> OnLocalTimeout() -> sender.Timeout()
-			sender.Timeout(want)
-		},
-		func(got hotstuff.TimeoutMsg) {
-			// This should be invoked 6 times (2 per replica, 3 receiving replicas)
-			if got.ID != want.ID {
-				t.Errorf("wrong id: got: %d, want: %d", got.ID, want.ID)
-			}
-			if got.View != want.View {
-				t.Errorf("wrong view: got: %d, want: %d", got.View, want.View)
-			}
-		},
-	)
+
+	testBase(t, want, func(auth *cert.Authority, sender *network.GorumsSender) {
+		sig, err := auth.Sign(view.ToBytes())
+		if err != nil {
+			t.Fatal(err)
+		}
+		want.ViewSignature = sig
+		wg.Add(6)
+		// We send only a single timeout message, but the synchronizer triggers
+		// an additional timeout, resulting from the following call chain:
+		// Start() -> startTimeoutTimer() -> TimeoutEvent -> OnLocalTimeout() -> sender.Timeout()
+		sender.Timeout(want)
+		wg.Wait()
+	}, func(event any) {
+		// We should receive 2 TimeoutMsg events at all replicas except the sender
+		// for a total of 6 events (3 replicas * 2 events). This is because the
+		// synchronizer triggers an additional timeout.
+		got := event.(hotstuff.TimeoutMsg)
+		if got.ID != want.ID {
+			t.Errorf("wrong id in proposal: got: %d, want: %d", got.ID, want.ID)
+		}
+		if got.View != want.View {
+			t.Errorf("wrong view in proposal: got: %d, want: %d", got.View, want.View)
+		}
+		wg.Done()
+	})
 }
 
 type testData struct {
@@ -214,7 +190,7 @@ func setupTLS(t *testing.T, n int) testData {
 		t.Fatalf("Failed to generate CA: %v", err)
 	}
 
-	for i := range n {
+	for i := 0; i < n; i++ {
 		cert, err := keygen.GenerateTLSCert(
 			hotstuff.ID(i)+1,
 			[]string{"localhost", "127.0.0.1"},
@@ -249,7 +225,7 @@ func runBoth(t *testing.T, run func(*testing.T, setupFunc)) {
 
 func createServers(t *testing.T, td testData) []replicaDeps {
 	t.Helper()
-	deps := make([]replicaDeps, 0, td.n)
+	deps := make([]replicaDeps, 0)
 	for i := range td.n {
 		depsCore := wiring.NewCore(hotstuff.ID(i+1), "test", td.keys[i])
 		sender := network.NewGorumsSender(
@@ -257,6 +233,7 @@ func createServers(t *testing.T, td testData) []replicaDeps {
 			depsCore.Logger(),
 			depsCore.RuntimeCfg(),
 			td.creds,
+			gorums.WithDialTimeout(time.Second),
 		)
 		depsSecurity := wiring.NewSecurity(
 			depsCore.EventLoop(),
@@ -277,11 +254,33 @@ func createServers(t *testing.T, td testData) []replicaDeps {
 		states, err := protocol.NewViewStates(
 			depsSecurity.Blockchain(),
 			depsSecurity.Authority(),
+			depsCore.RuntimeCfg(),
 		)
 		if err != nil {
 			t.Fatal(err)
 		}
 		leaderRotation := leaderrotation.NewFixed(hotstuff.ID(1))
+		voteCollector := propagator.NewVoteCollector(depsCore.RuntimeCfg())
+		seenMachine := votingmachine.NewSeenMachine(
+			depsCore.Logger(),
+			depsCore.EventLoop(),
+			depsCore.RuntimeCfg(),
+			depsSecurity.Blockchain(),
+			depsSecurity.Authority(),
+			states,
+		)
+		propagator := propagator.NewPropagator(
+			depsCore.RuntimeCfg(),
+			depsCore.EventLoop(),
+			depsCore.Logger(),
+			leaderRotation,
+			states,
+			depsSecurity.Authority(),
+			voteCollector,
+			depsSecurity.Blockchain(),
+			sender,
+			seenMachine,
+		)
 		depsConsensus := wiring.NewConsensus(
 			depsCore.EventLoop(),
 			depsCore.Logger(),
@@ -308,7 +307,13 @@ func createServers(t *testing.T, td testData) []replicaDeps {
 				),
 				leaderRotation,
 				sender,
+				propagator,
 			),
+			sender,
+		)
+		timeoutRuler := synchronizer.NewSimple(
+			depsCore.RuntimeCfg(),
+			depsSecurity.Authority(),
 		)
 		synchronizer := synchronizer.New(
 			depsCore.EventLoop(),
@@ -317,10 +322,11 @@ func createServers(t *testing.T, td testData) []replicaDeps {
 			depsSecurity.Authority(),
 			leaderRotation,
 			synchronizer.NewFixedDuration(100*time.Millisecond),
-			synchronizer.NewTimeoutRuler(depsCore.RuntimeCfg(), depsSecurity.Authority()),
+			timeoutRuler,
 			depsConsensus.Proposer(),
 			depsConsensus.Voter(),
 			states,
+			voteCollector,
 			sender,
 		)
 		deps = append(deps, replicaDeps{

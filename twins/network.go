@@ -2,7 +2,6 @@ package twins
 
 import (
 	"context"
-	"crypto/ecdsa"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -11,62 +10,41 @@ import (
 	"strings"
 
 	"github.com/relab/hotstuff"
-	"github.com/relab/hotstuff/core"
 	"github.com/relab/hotstuff/core/logging"
-	"github.com/relab/hotstuff/security/crypto/keygen"
 )
 
 // NodeID is an ID that is unique to a node in the network.
 // The ReplicaID is the ID that the node uses when taking part in the consensus protocol,
-// The TwinID is used to distinguish twins of the same replica (TwinID 1 and 2).
-// Replicas without twin have TwinID 0.
+// while the NetworkID is used to distinguish nodes on the network.
 type NodeID struct {
 	ReplicaID hotstuff.ID
-	TwinID    uint32
+	NetworkID uint32
 }
 
 func (id NodeID) String() string {
-	return fmt.Sprintf("r%dn%d", id.ReplicaID, id.TwinID)
-}
-
-// Twin returns a NodeID with the specified twinID.
-// TwinID should be 0 for non-twins, 1 or 2 for twins.
-func (id NodeID) Twin(twinID uint32) NodeID {
-	id.TwinID = twinID
-	return id
-}
-
-func Replica(id hotstuff.ID) NodeID {
-	return NodeID{
-		ReplicaID: id,
-		TwinID:    uint32(0),
-	}
+	return fmt.Sprintf("r%dn%d", id.ReplicaID, id.NetworkID)
 }
 
 type pendingMessage struct {
 	message  any
-	sender   NodeID
-	receiver NodeID
-	view     hotstuff.View
+	sender   uint32
+	receiver uint32
 }
 
 func (pm pendingMessage) String() string {
 	if pm.message == nil {
-		return fmt.Sprintf("%v→%v", pm.sender, pm.receiver)
+		return fmt.Sprintf("%d→%d", pm.sender, pm.receiver)
 	}
-	return fmt.Sprintf("%v→%v: %v", pm.sender, pm.receiver, pm.message)
+	return fmt.Sprintf("%d→%d: %v", pm.sender, pm.receiver, pm.message)
 }
 
 // Network is a simulated network that supports twins.
 type Network struct {
-	nodes map[NodeID]*node
+	nodes map[uint32]*node
 	// Maps a replica ID to a replica and its twins.
 	replicas map[hotstuff.ID][]*node
 	// For each view (starting at 1), contains the list of partitions for that view.
 	views []View
-
-	// Global view, to enforce no out of view messages.
-	globalView hotstuff.View
 
 	// the message types to drop
 	dropTypes map[reflect.Type]struct{}
@@ -83,29 +61,26 @@ type Network struct {
 func NewSimpleNetwork(numNodes int) *Network {
 	allNodesSet := make(NodeSet)
 	for i := 1; i <= numNodes; i++ {
-		allNodesSet.Add(Replica(hotstuff.ID(i)))
+		allNodesSet.Add(uint32(i))
 	}
 	network := &Network{
-		nodes:      make(map[NodeID]*node),
-		replicas:   make(map[hotstuff.ID][]*node),
-		views:      []View{{Leader: 1, Partitions: []NodeSet{allNodesSet}}},
-		globalView: 1,
-		dropTypes:  make(map[reflect.Type]struct{}),
+		nodes:     make(map[uint32]*node),
+		replicas:  make(map[hotstuff.ID][]*node),
+		views:     []View{{Leader: 1, Partitions: []NodeSet{allNodesSet}}},
+		dropTypes: make(map[reflect.Type]struct{}),
 	}
 	network.logger = logging.NewWithDest(&network.log, "network")
 	return network
 }
 
-// NewPartitionedNetwork creates a new Network with the specified list of views.
-// Each view must specify a leader and a set of partitions, each with a set of nodes.
-// One or more message types may be specified, which will be dropped at the sending node.
+// NewPartitionedNetwork creates a new Network with the specified partitions.
+// partitions specifies the network partitions for each view.
 func NewPartitionedNetwork(views []View, dropTypes ...any) *Network {
 	n := &Network{
-		nodes:      make(map[NodeID]*node),
-		replicas:   make(map[hotstuff.ID][]*node),
-		views:      views,
-		globalView: 1,
-		dropTypes:  make(map[reflect.Type]struct{}),
+		nodes:     make(map[uint32]*node),
+		replicas:  make(map[hotstuff.ID][]*node),
+		views:     views,
+		dropTypes: make(map[reflect.Type]struct{}),
 	}
 	n.logger = logging.NewWithDest(&n.log, "network")
 	for _, t := range dropTypes {
@@ -114,30 +89,15 @@ func NewPartitionedNetwork(views []View, dropTypes ...any) *Network {
 	return n
 }
 
-// createNodesAndTwins creates nodes and their twins in the network.
-// Twins receive the same private key.
-func (n *Network) createNodesAndTwins(nodes []NodeID, consensusName string, opts ...core.RuntimeOption) error {
+func (n *Network) createTwinsNodes(nodes []NodeID, consensusName string) error {
 	for _, nodeID := range nodes {
-		var privKey *ecdsa.PrivateKey
-		var err error
-		if twins := n.replicas[nodeID.ReplicaID]; len(twins) == 0 {
-			// generate new key since this is the first replica with this ReplicaID
-			privKey, err = keygen.GenerateECDSAPrivateKey()
-			if err != nil {
-				return fmt.Errorf("failed to generate private key: %w", err)
-			}
-		} else {
-			// reuse the private key of the first replica
-			privKey = twins[0].config.PrivateKey().(*ecdsa.PrivateKey)
-		}
-		node, err := newNode(n, nodeID, consensusName, privKey, opts...)
+		node, err := newNode(n, nodeID, consensusName)
 		if err != nil {
 			return fmt.Errorf("failed to create node %v: %w", nodeID, err)
 		}
-		n.nodes[nodeID] = node
+		n.nodes[nodeID.NetworkID] = node
 		n.replicas[nodeID.ReplicaID] = append(n.replicas[nodeID.ReplicaID], node)
 	}
-
 	// need to configure the replica info after all of them were set up
 	for _, node := range n.nodes {
 		config := node.config
@@ -179,21 +139,10 @@ func (n *Network) run(ticks int) {
 // tick adds pending messages to each node's event loop and subsequently performs one tick for each node,
 // processing each pending message.
 func (n *Network) tick() {
-	nextMsgs := make([]pendingMessage, 0, len(n.pendingMessages))
 	for _, msg := range n.pendingMessages {
-		if msg.view > n.globalView {
-			nextMsgs = append(nextMsgs, msg)
-			continue
-		}
 		n.nodes[msg.receiver].eventLoop.AddEvent(msg.message)
 	}
-
-	if len(n.pendingMessages) == len(nextMsgs) {
-		// no new messages were delivered, advance global view
-		n.globalView++
-	}
-
-	n.pendingMessages = nextMsgs
+	n.pendingMessages = nil
 
 	for _, node := range n.nodes {
 		node.eventLoop.AddEvent(tick{})
@@ -205,9 +154,19 @@ func (n *Network) tick() {
 
 // shouldDrop decides if the sender should drop the message, based on the current view of the sender and the
 // partitions configured for that view.
-func (n *Network) shouldDrop(sender, receiver NodeID, message any, view hotstuff.View) bool {
+func (n *Network) shouldDrop(sender, receiver uint32, message any) bool {
+	node, ok := n.nodes[sender]
+	if !ok {
+		panic(fmt.Errorf("node matching sender id %d was not found", sender))
+	}
+
 	// Index into viewPartitions.
-	i := int(view) - 1
+	i := -1
+	if node.effectiveView > node.viewStates.View() {
+		i += int(node.effectiveView)
+	} else {
+		i += int(node.viewStates.View())
+	}
 
 	if i < 0 {
 		return false
@@ -225,43 +184,28 @@ func (n *Network) shouldDrop(sender, receiver NodeID, message any, view hotstuff
 		}
 	}
 
-	_, ok := n.dropTypes[reflect.TypeOf(message)]
+	_, ok = n.dropTypes[reflect.TypeOf(message)]
 
 	return ok
 }
 
-// NodeSet is a set of NodeIDs.
-type NodeSet map[NodeID]struct{}
-
-// NewNodeSet creates a new NodeSet containing the specified NodeIDs.
-func NewNodeSet(ids ...NodeID) NodeSet {
-	s := make(NodeSet)
-	for _, id := range ids {
-		s.Add(id)
-	}
-	return s
-}
+// NodeSet is a set of network ids.
+type NodeSet map[uint32]struct{}
 
 // Add adds a NodeID to the set.
-func (s NodeSet) Add(v NodeID) {
+func (s NodeSet) Add(v uint32) {
 	s[v] = struct{}{}
 }
 
 // Contains returns true if the set contains the NodeID, false otherwise.
-func (s NodeSet) Contains(v NodeID) bool {
+func (s NodeSet) Contains(v uint32) bool {
 	_, ok := s[v]
 	return ok
 }
 
 // MarshalJSON returns a JSON representation of the node set.
 func (s NodeSet) MarshalJSON() ([]byte, error) {
-	ids := slices.Collect(maps.Keys(s))
-	slices.SortFunc(ids, func(a, b NodeID) int {
-		if a.ReplicaID != b.ReplicaID {
-			return int(a.ReplicaID) - int(b.ReplicaID)
-		}
-		return int(a.TwinID) - int(b.TwinID)
-	})
+	ids := slices.Sorted(maps.Keys(s))
 	return json.Marshal(ids)
 }
 
@@ -270,7 +214,7 @@ func (s *NodeSet) UnmarshalJSON(data []byte) error {
 	if *s == nil {
 		*s = make(NodeSet)
 	}
-	var nodes []NodeID
+	var nodes []uint32
 	err := json.Unmarshal(data, &nodes)
 	if err != nil {
 		return err

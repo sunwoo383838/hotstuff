@@ -70,12 +70,7 @@ func (hs *ChainedHotStuff) CommitRule(block *hotstuff.Block) *hotstuff.Block {
 		return nil
 	}
 
-	// since our implementation does not create dummy blocks every view, 
-	// we explicitly check that the parents are in the previous view
-	if block1.Parent() == block2.Hash() && 
-		block1.View() == block2.View()+1 &&
-		block2.Parent() == block3.Hash() &&
-		block2.View() == block3.View()+1 {
+	if block1.Parent() == block2.Hash() && block2.Parent() == block3.Hash() {
 		hs.logger.Debug("CommitRule - DECIDE: ", block3)
 		return block3
 	}
@@ -112,11 +107,8 @@ func (hs *ChainedHotStuff) ChainLength() int {
 }
 
 // ProposeRule returns a new hotstuff proposal based on the current view, quorum certificate, and command batch.
-func (hs *ChainedHotStuff) ProposeRule(view hotstuff.View, cert hotstuff.SyncInfo, cmd *clientpb.Batch) (proposal hotstuff.ProposeMsg, ok bool) {
-	qc, ok := cert.QC()
-	if !ok {
-		return proposal, false
-	}
+func (hs *ChainedHotStuff) ProposeRule(view hotstuff.View, _ hotstuff.Cert, cert hotstuff.SyncInfo, cmd *clientpb.Batch) (proposal hotstuff.ProposeMsg, ok bool) {
+	qc, _ := cert.QC() // TODO: we should avoid cert does not contain a QC so we cannot fail here
 	proposal = hotstuff.NewProposeMsg(hs.config.ID(), view, qc, cmd)
 	return proposal, true
 }

@@ -18,6 +18,7 @@ type Blockchain struct {
 	sender    core.Sender
 	eventLoop *eventloop.EventLoop
 	logger    logging.Logger
+	config    *core.RuntimeConfig
 
 	mut         sync.Mutex
 	pruneHeight hotstuff.View
@@ -33,17 +34,24 @@ func New(
 	eventLoop *eventloop.EventLoop,
 	logger logging.Logger,
 	sender core.Sender,
+	config *core.RuntimeConfig,
 ) *Blockchain {
 	bc := &Blockchain{
 		sender:    sender,
 		eventLoop: eventLoop,
 		logger:    logger,
+		config:    config,
 
 		blocks:        make(map[hotstuff.Hash]*hotstuff.Block),
 		blockAtHeight: make(map[hotstuff.View]*hotstuff.Block),
 		pendingFetch:  make(map[hotstuff.Hash]context.CancelFunc),
 	}
-	bc.Store(hotstuff.GetGenesis())
+
+	if config.HasNVC() {
+		bc.Store(hotstuff.GetGenesisQSC())
+	} else {
+		bc.Store(hotstuff.GetGenesis())
+	}
 	return bc
 }
 

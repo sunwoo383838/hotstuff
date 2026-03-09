@@ -14,13 +14,13 @@ const NameViewTimeouts = "timeouts"
 type viewTimeouts struct {
 	metricsLogger Logger
 	id            hotstuff.ID
-	numViews      uint64
-	numTimeouts   uint64
+
+	numViews    uint64
+	numTimeouts uint64
 }
 
-// enableViewTimeouts enables view timeout measurement.
 func enableViewTimeouts(
-	el *eventloop.EventLoop,
+	eventLoop *eventloop.EventLoop,
 	metricsLogger Logger,
 	id hotstuff.ID,
 ) {
@@ -28,15 +28,16 @@ func enableViewTimeouts(
 		metricsLogger: metricsLogger,
 		id:            id,
 	}
-	eventloop.Register(el, func(event hotstuff.ViewChangeEvent) {
-		vt.viewChange(event)
+
+	eventLoop.RegisterHandler(hotstuff.ViewChangeEvent{}, func(event any) {
+		vt.viewChange(event.(hotstuff.ViewChangeEvent))
 	})
-	eventloop.Register(el, func(tickEvent types.TickEvent) {
-		vt.tick(tickEvent)
+
+	eventLoop.RegisterHandler(types.TickEvent{}, func(event any) {
+		vt.tick(event.(types.TickEvent))
 	}, eventloop.Prioritize())
 }
 
-// viewChange records a view change event, incrementing the timeout count if applicable.
 func (vt *viewTimeouts) viewChange(event hotstuff.ViewChangeEvent) {
 	vt.numViews++
 	if event.Timeout {
@@ -44,10 +45,9 @@ func (vt *viewTimeouts) viewChange(event hotstuff.ViewChangeEvent) {
 	}
 }
 
-// tick logs the current view timeout measurement to the metrics logger.
 func (vt *viewTimeouts) tick(_ types.TickEvent) {
 	vt.metricsLogger.Log(&types.ViewTimeouts{
-		Event:    types.NewReplicaEvent(vt.id, time.Now()),
+		Event:    types.NewReplicaEvent(uint32(vt.id), time.Now()),
 		Views:    vt.numViews,
 		Timeouts: vt.numTimeouts,
 	})

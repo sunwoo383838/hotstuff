@@ -37,11 +37,8 @@ func WithAggregateQC() RuntimeOption {
 	}
 }
 
-// WithCache specifies the cache size for crypto operations. This option causes
-// the Crypto implementation to be wrapped in a caching layer that caches the
-// results of recent crypto operations, avoiding repeated computations.
-func WithCache(size uint) RuntimeOption {
+func WithNVC() RuntimeOption {
 	return func(g *RuntimeConfig) {
-		g.cacheSize = size
+		g.nvc = true
 	}
 }

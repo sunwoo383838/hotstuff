@@ -5,6 +5,7 @@ package protocol
 
 import (
 	"fmt"
+	"github.com/relab/hotstuff/core"
 	"sync"
 
 	"github.com/relab/hotstuff"
@@ -17,10 +18,13 @@ import (
 type ViewStates struct {
 	blockchain *blockchain.Blockchain
 	auth       *cert.Authority
+	config     *core.RuntimeConfig
 
-	mut            sync.RWMutex // protects the following fields:
+	mut sync.RWMutex // to protect the following
+
 	highTC         hotstuff.TimeoutCert
 	highQC         hotstuff.QuorumCert
+	highQSC        hotstuff.QuorumSeenCert
 	view           hotstuff.View
 	committedBlock *hotstuff.Block
 }
@@ -28,15 +32,25 @@ type ViewStates struct {
 func NewViewStates(
 	blockchain *blockchain.Blockchain,
 	auth *cert.Authority,
+	config *core.RuntimeConfig,
 ) (*ViewStates, error) {
 	s := &ViewStates{
 		blockchain: blockchain,
 		auth:       auth,
+		config:     config,
 
-		committedBlock: hotstuff.GetGenesis(),
-		view:           1,
+		view: 1,
 	}
 	var err error
+	if config.HasNVC() {
+		s.committedBlock = hotstuff.GetGenesisQSC()
+		s.highQSC, err = s.auth.CreateQuorumSeenCert(hotstuff.GetGenesisQSC(), []hotstuff.SeenCert{})
+		if err != nil {
+			return nil, fmt.Errorf("unable to create empty quorum seen cert for genesis block: %v", err)
+		}
+		return s, nil
+	}
+	s.committedBlock = hotstuff.GetGenesis()
 	s.highQC, err = s.auth.CreateQuorumCert(hotstuff.GetGenesis(), []hotstuff.PartialCert{})
 	if err != nil {
 		return nil, fmt.Errorf("unable to create empty quorum cert for genesis block: %v", err)
@@ -45,6 +59,7 @@ func NewViewStates(
 	if err != nil {
 		return nil, fmt.Errorf("unable to create empty timeout cert for view 0: %v", err)
 	}
+
 	return s, nil
 }
 
@@ -65,10 +80,22 @@ func (s *ViewStates) UpdateHighQC(qc hotstuff.QuorumCert) (bool, error) {
 	return true, nil
 }
 
-// UpdateHighTC updates HighTC if timeout certificate's view is higher than the current HighTC.
-func (s *ViewStates) UpdateHighTC(tc hotstuff.TimeoutCert) {
+func (s *ViewStates) UpdateHighQSC(qsc hotstuff.QuorumSeenCert) (bool, error) {
+	newBlock, ok := s.blockchain.Get(qsc.BlockHash())
+	if !ok {
+		return false, fmt.Errorf("block %x not found for QSC@view %d", qsc.BlockHash(), qsc.View())
+	}
 	s.mut.Lock()
 	defer s.mut.Unlock()
+	if newBlock.View() <= s.highQSC.View() {
+		return false, nil
+	}
+	s.highQSC = qsc
+	return true, nil
+}
+
+// UpdateHighTC updates HighTC if timeout certificate's view is higher than the current HighTC.
+func (s *ViewStates) UpdateHighTC(tc hotstuff.TimeoutCert) {
 	if tc.View() > s.highTC.View() {
 		s.highTC = tc
 	}
@@ -79,6 +106,13 @@ func (s *ViewStates) HighQC() hotstuff.QuorumCert {
 	s.mut.RLock()
 	defer s.mut.RUnlock()
 	return s.highQC
+}
+
+// HighQC returns the highest known quorum certificate.
+func (s *ViewStates) HighQSC() hotstuff.QuorumSeenCert {
+	s.mut.RLock()
+	defer s.mut.RUnlock()
+	return s.highQSC
 }
 
 // HighTC returns the highest known timeout certificate.
@@ -105,12 +139,12 @@ func (s *ViewStates) View() hotstuff.View {
 
 // SyncInfo returns the highest known QC or TC.
 func (s *ViewStates) SyncInfo() hotstuff.SyncInfo {
-	si := hotstuff.NewSyncInfo()
 	s.mut.RLock()
-	si.SetQC(s.highQC)
-	si.SetTC(s.highTC)
-	s.mut.RUnlock()
-	return si
+	defer s.mut.RUnlock()
+	if s.config.HasNVC() {
+		return hotstuff.NewSyncInfo().WithQSC(s.HighQSC())
+	}
+	return hotstuff.NewSyncInfo().WithQC(s.HighQC()).WithTC(s.HighTC())
 }
 
 // UpdateCommittedBlock updates the last committed block.

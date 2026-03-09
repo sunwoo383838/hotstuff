@@ -1,12 +1,12 @@
 package synchronizer
 
 import (
+	"github.com/relab/hotstuff/protocol/propagator"
 	"testing"
 
 	"cuelang.org/go/pkg/time"
 	"github.com/relab/hotstuff"
 
-	"github.com/relab/hotstuff/core"
 	"github.com/relab/hotstuff/internal/proto/clientpb"
 	"github.com/relab/hotstuff/internal/testutil"
 	"github.com/relab/hotstuff/protocol"
@@ -40,6 +40,29 @@ func wireUpSynchronizer(
 		essentials.Authority(),
 		viewStates,
 	)
+
+	voteCollector := propagator.NewVoteCollector(essentials.RuntimeCfg())
+	seenMachine := votingmachine.NewSeenMachine(
+		essentials.Logger(),
+		essentials.EventLoop(),
+		essentials.RuntimeCfg(),
+		essentials.Blockchain(),
+		essentials.Authority(),
+		viewStates,
+	)
+	propagator := propagator.NewPropagator(
+		essentials.RuntimeCfg(),
+		essentials.EventLoop(),
+		essentials.Logger(),
+		leaderRotation,
+		viewStates,
+		essentials.Authority(),
+		voteCollector,
+		essentials.Blockchain(),
+		essentials.MockSender(),
+		seenMachine,
+	)
+
 	depsConsensus := wiring.NewConsensus(
 		essentials.EventLoop(),
 		essentials.Logger(),
@@ -55,7 +78,9 @@ func wireUpSynchronizer(
 			votingMachine,
 			leaderRotation,
 			essentials.MockSender(),
+			propagator,
 		),
+		essentials.MockSender(),
 	)
 	synchronizer := New(
 		essentials.EventLoop(),
@@ -64,10 +89,11 @@ func wireUpSynchronizer(
 		essentials.Authority(),
 		leaderRotation,
 		NewFixedDuration(1000*time.Nanosecond),
-		NewTimeoutRuler(essentials.RuntimeCfg(), essentials.Authority()),
+		NewSimple(essentials.RuntimeCfg(), essentials.Authority()),
 		depsConsensus.Proposer(),
 		depsConsensus.Voter(),
 		viewStates,
+		voteCollector,
 		essentials.MockSender(),
 	)
 	return synchronizer, depsConsensus.Proposer()
@@ -79,6 +105,7 @@ func TestAdvanceViewQC(t *testing.T) {
 	viewStates, err := protocol.NewViewStates(
 		subject.Blockchain(),
 		subject.Authority(),
+		subject.RuntimeCfg(),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -115,7 +142,7 @@ func TestAdvanceViewQC(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	synchronizer.advanceView(hotstuff.NewSyncInfoWith(qc))
+	synchronizer.advanceView(hotstuff.NewSyncInfo().WithQC(qc))
 
 	if viewStates.View() != 2 {
 		t.Errorf("wrong view: expected: %d, got: %d", 2, viewStates.View())
@@ -128,6 +155,7 @@ func TestAdvanceViewTC(t *testing.T) {
 	viewStates, err := protocol.NewViewStates(
 		subject.Blockchain(),
 		subject.Authority(),
+		subject.RuntimeCfg(),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -154,7 +182,7 @@ func TestAdvanceViewTC(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	synchronizer.advanceView(hotstuff.NewSyncInfoWith(tc))
+	synchronizer.advanceView(hotstuff.NewSyncInfo().WithTC(tc))
 
 	if viewStates.View() != 2 {
 		t.Errorf("wrong view: expected: %d, got: %d", 2, viewStates.View())
@@ -222,25 +250,28 @@ func TestAdvanceView(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var opts []core.RuntimeOption
-			if tt.tr == A {
-				opts = append(opts, core.WithAggregateQC())
-			}
-			set, viewStates, synchronizer, block := prepareSynchronizer(t, opts...)
+			set, viewStates, synchronizer, block := prepareSynchronizer(t)
 			signers := set.Signers()
+			essentials := set[0]
+			// this is a workaround since we want to test both timeout rules in the same test
+			if tt.tr == A {
+				synchronizer.timeoutRules = NewAggregate(essentials.RuntimeCfg(), essentials.Authority())
+			} else {
+				synchronizer.timeoutRules = NewSimple(essentials.RuntimeCfg(), essentials.Authority())
+			}
 
 			syncInfo := hotstuff.NewSyncInfo()
 			if tt.qc {
 				validQC := testutil.CreateQC(t, block, signers[tt.firstSignerIdx:]...)
-				syncInfo.SetQC(validQC)
+				syncInfo = syncInfo.WithQC(validQC)
 			}
 			if tt.tc {
 				validTC := testutil.CreateTC(t, 1, signers[tt.firstSignerIdx:])
-				syncInfo.SetTC(validTC)
+				syncInfo = syncInfo.WithTC(validTC)
 			}
 			if tt.ac {
 				validAC := testutil.CreateAC(t, 1, signers[tt.firstSignerIdx:])
-				syncInfo.SetAggQC(validAC)
+				syncInfo = syncInfo.WithAggQC(validAC)
 			}
 
 			// t.Logf("  %s: SyncInfo: %v", tt.name, syncInfo)
@@ -254,12 +285,13 @@ func TestAdvanceView(t *testing.T) {
 	}
 }
 
-func prepareSynchronizer(t *testing.T, opts ...core.RuntimeOption) (testutil.EssentialsSet, *protocol.ViewStates, *Synchronizer, *hotstuff.Block) {
-	set := testutil.NewEssentialsSet(t, 4, crypto.NameECDSA, opts...)
+func prepareSynchronizer(t *testing.T) (testutil.EssentialsSet, *protocol.ViewStates, *Synchronizer, *hotstuff.Block) {
+	set := testutil.NewEssentialsSet(t, 4, crypto.NameECDSA)
 	subject := set[0]
 	viewStates, err := protocol.NewViewStates(
 		subject.Blockchain(),
 		subject.Authority(),
+		subject.RuntimeCfg(),
 	)
 	if err != nil {
 		t.Fatal(err)

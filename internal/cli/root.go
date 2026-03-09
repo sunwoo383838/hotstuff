@@ -41,11 +41,11 @@ use 'hotstuff help run' to view all possible parameters for this command.`,
 					rules.NameSimpleHotStuff,
 					rules.NameFastHotStuff,
 					rules.NameChainedHotStuff,
+					rules.NameHotStuff1,
 				},
 				"--byzantine-strategy": {
 					byzantine.NameSilentProposer,
 					byzantine.NameFork,
-					byzantine.NameIncreaseView,
 				},
 				"--crypto": {
 					crypto.NameECDSA,

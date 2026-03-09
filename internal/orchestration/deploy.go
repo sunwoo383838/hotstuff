@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"path"
 	"path/filepath"
 	"strings"
@@ -56,6 +57,8 @@ func Deploy(g iago.Group, cfg DeployConfig) (workers map[string]WorkerSession, e
 		panic(err)
 	}
 
+	log.Printf("디렉토리 생성 시작")
+
 	g.Run("Create temporary directory",
 		func(_ context.Context, host iago.Host) error {
 			tmpDir := "hotstuff." + rand.Text()[:8]
@@ -65,6 +68,8 @@ func Deploy(g iago.Group, cfg DeployConfig) (workers map[string]WorkerSession, e
 			host.SetVar("data-dir", dataDir)
 			return fs.MkdirAll(host.GetFS(), dataDir, 0o755)
 		})
+
+	log.Printf("바이너리 파일 전송 시작")
 
 	g.Run("Upload hotstuff binary",
 		func(ctx context.Context, host iago.Host) (err error) {
@@ -214,10 +219,7 @@ func (w *workerSetup) Apply(_ context.Context, host iago.Host) (err error) {
 	}
 
 	sb.WriteString("--metrics=\"")
-	for _, metric := range w.cfg.Metrics {
-		sb.WriteString(metric)
-		sb.WriteString(",")
-	}
+	sb.WriteString(strings.Join(w.cfg.Metrics, ","))
 	sb.WriteString("\" ")
 
 	if w.cfg.CPUProfiling {

@@ -95,11 +95,8 @@ func (hs *SimpleHotStuff) ChainLength() int {
 }
 
 // ProposeRule returns a new hotstuff proposal based on the current view, quorum certificate, and command batch.
-func (hs *SimpleHotStuff) ProposeRule(view hotstuff.View, cert hotstuff.SyncInfo, cmd *clientpb.Batch) (proposal hotstuff.ProposeMsg, ok bool) {
-	qc, ok := cert.QC()
-	if !ok {
-		return proposal, false
-	}
+func (hs *SimpleHotStuff) ProposeRule(view hotstuff.View, _ hotstuff.Cert, cert hotstuff.SyncInfo, cmd *clientpb.Batch) (proposal hotstuff.ProposeMsg, ok bool) {
+	qc, _ := cert.QC() // TODO: we should avoid cert does not contain a QC so we cannot fail here
 	proposal = hotstuff.NewProposeMsg(hs.config.ID(), view, qc, cmd)
 	return proposal, true
 }

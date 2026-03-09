@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/relab/hotstuff"
-	"github.com/relab/hotstuff/client"
 	"github.com/relab/hotstuff/internal/proto/orchestrationpb"
 	"google.golang.org/protobuf/types/known/durationpb"
 )
@@ -137,6 +136,17 @@ type ExperimentConfig struct {
 	RateStepInterval time.Duration
 	// MeasurementInterval is the time interval between measurements
 	MeasurementInterval time.Duration
+
+	//multi region
+	Terraform TerraformConfig
+}
+
+type TerraformConfig struct {
+	InstanceType          string   // from CUE: instanceType
+	DiskSizeGB            int      // from CUE: diskSizeGB
+	UseSpotInstances      bool     // from CUE: useSpotInstances
+	SpotTerminationAction string   // from CUE: spotTerminationAction
+	Regions               []string // from CUE: regions (["us-east-1", "us-east-2", ...])
 }
 
 // Clone returns a clone of the ExperimentConfig. It makes a shallow copy
@@ -158,6 +168,8 @@ func (c *ExperimentConfig) Clone() *ExperimentConfig {
 			clone.ByzantineStrategy[k] = slices.Clone(v)
 		}
 	}
+
+	clone.Terraform.Regions = slices.Clone(c.Terraform.Regions)
 	clone.TreePositions = slices.Clone(c.TreePositions)
 
 	return &clone
@@ -239,7 +251,7 @@ func (c *ExperimentConfig) lookupByzStrategy(replicaID hotstuff.ID) string {
 // AssignClients assigns clients to hosts.
 func (c *ExperimentConfig) AssignClients() ClientMap {
 	hostsToClients := make(ClientMap)
-	nextClientID := client.ID(1)
+	nextClientID := hotstuff.ID(1)
 
 	for hostIdx, host := range c.ClientHosts {
 		numClients := c.ClientsForHost(hostIdx)
@@ -259,6 +271,10 @@ func (c *ExperimentConfig) IsLocal() bool {
 	}
 	return c.ReplicaHosts[0] == "localhost" && c.ClientHosts[0] == "localhost" ||
 		c.ReplicaHosts[0] == "127.0.0.1" && c.ClientHosts[0] == "127.0.0.1"
+}
+
+func (c *ExperimentConfig) UseTerraform() bool {
+	return len(c.Terraform.Regions) > 0
 }
 
 // AllHosts returns the list of all hostnames, including replicas and clients.
@@ -321,7 +337,7 @@ func (r ReplicaMap) ReplicaIDs(host string) []uint32 {
 }
 
 // ClientMap maps from a host to a slice of client IDs.
-type ClientMap map[string][]client.ID
+type ClientMap map[string][]hotstuff.ID
 
 // ClientIDs returns the IDs of the clients running on the given host.
 func (c ClientMap) ClientIDs(host string) []uint32 {

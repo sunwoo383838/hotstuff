@@ -32,6 +32,7 @@ func TestValidCommit(t *testing.T) {
 	viewStates, err := protocol.NewViewStates(
 		essentials.Blockchain(),
 		essentials.Authority(),
+		essentials.RuntimeCfg(),
 	)
 	if err != nil {
 		t.Fatal(err)

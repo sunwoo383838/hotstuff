@@ -16,7 +16,7 @@ func TestHandler(t *testing.T) {
 	logger := logging.New("test")
 	el := eventloop.New(logger, 10)
 	c := make(chan any)
-	eventloop.Register(el, func(event testEvent) {
+	el.RegisterHandler(testEvent(0), func(event any) {
 		c <- event
 	})
 
@@ -56,10 +56,10 @@ func TestPrioritize(t *testing.T) {
 	logger := logging.New("test")
 	el := eventloop.New(logger, 10)
 	c := make(chan eventData)
-	eventloop.Register(el, func(event testEvent) {
+	el.RegisterHandler(testEvent(0), func(event any) {
 		c <- eventData{event: event, handler: true}
 	})
-	eventloop.Register(el, func(event testEvent) {
+	el.RegisterHandler(testEvent(0), func(event any) {
 		c <- eventData{event: event, handler: false}
 	}, eventloop.Prioritize())
 
@@ -106,8 +106,8 @@ func TestTicker(t *testing.T) {
 	logger := logging.New("test")
 	el := eventloop.New(logger, 10)
 	count := 0
-	eventloop.Register(el, func(event testEvent) {
-		count += int(event)
+	el.RegisterHandler(testEvent(0), func(event any) {
+		count += int(event.(testEvent))
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -139,13 +139,13 @@ func TestDelayedEvent(t *testing.T) {
 	el := eventloop.New(logger, 10)
 	c := make(chan testEvent)
 
-	eventloop.Register(el, func(event testEvent) {
-		c <- event
+	el.RegisterHandler(testEvent(0), func(event any) {
+		c <- event.(testEvent)
 	})
 
 	// delay the "2" and "3" events until after the first instance of testEvent
-	eventloop.DelayUntil[testEvent](el, testEvent(2))
-	eventloop.DelayUntil[testEvent](el, testEvent(3))
+	el.DelayUntil(testEvent(0), testEvent(2))
+	el.DelayUntil(testEvent(0), testEvent(3))
 	// then send the "1" event
 	el.AddEvent(testEvent(1))
 
@@ -170,8 +170,8 @@ func BenchmarkEventLoopWithPrioritize(b *testing.B) {
 	el := eventloop.New(logger, 100)
 
 	for range 100 {
-		eventloop.Register(el, func(event testEvent) {
-			if event != 1 {
+		el.RegisterHandler(testEvent(0), func(event any) {
+			if event.(testEvent) != 1 {
 				panic("unexpected value")
 			}
 		}, eventloop.Prioritize())
@@ -188,8 +188,8 @@ func BenchmarkEventLoopWithUnsafeRunInAddEventHandlers(b *testing.B) {
 	el := eventloop.New(logger, 100)
 
 	for range 100 {
-		eventloop.Register(el, func(event testEvent) {
-			if event != 1 {
+		el.RegisterHandler(testEvent(0), func(event any) {
+			if event.(testEvent) != 1 {
 				panic("Unexpected value observed")
 			}
 		}, eventloop.UnsafeRunInAddEvent())
@@ -214,8 +214,8 @@ func BenchmarkDelay(b *testing.B) {
 	el := eventloop.New(logger, 100)
 
 	for b.Loop() {
-		eventloop.DelayUntil[testEvent](el, testEvent(2))
-		eventloop.DelayUntil[testEvent](el, testEvent(3))
+		el.DelayUntil(testEvent(0), testEvent(2))
+		el.DelayUntil(testEvent(0), testEvent(3))
 		el.AddEvent(testEvent(1))
 		el.Tick(context.Background())
 		el.Tick(context.Background())
